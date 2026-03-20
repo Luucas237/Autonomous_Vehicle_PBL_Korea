@@ -25,6 +25,7 @@ For 3D:
 
 ros2 launch slam rtabmap_slam.launch.py
 
+
 Rasbian => Terminator #2
 
 ros2 launch peripherals teleop_key_control.launch.py 
@@ -33,6 +34,7 @@ ros2 launch peripherals teleop_key_control.launch.py
 Ubuntu ==> #1
 
 xhost +local:root
+
 
 Ubuntu ==> #2
 
@@ -48,9 +50,11 @@ source install/setup.bash
 
 source /workspace/.typerc
 
+
 For 2D: 
 
 ros2 launch slam rviz_slam.launch.py
+
 
 For 3D:
 
