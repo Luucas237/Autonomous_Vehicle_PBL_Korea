@@ -15,6 +15,28 @@ HW-67
 
 hiwonder
 
+
+## Project Architecture & Team Workflow
+
+The development is divided into three distinct modules. Manufacturer packages (`slam`, `navigation`, `simulations`) are treated as read-only libraries. All custom ROS 2 nodes must be developed within the specific packages listed below.
+
+### 1. LiDAR & Spatial Awareness
+* **Objective:** Raw point cloud processing, obstacle avoidance, and parking logic.
+* **Target Package:** `mentorpi_navigation`
+* **Dedicated Branches:** `feature/lidar-obstacle`, `feature/lidar-parking`
+
+### 2. Vision & Perception
+* **Objective:** Camera image processing, lane tracking, and traffic sign detection (YOLO/OpenCV).
+* **Target Package:** `mentorpi_vision`
+* **Dedicated Branches:** `feature/lanes-tracking`, `feature/sign-detection`
+
+### 3. Core Control & Sensor Fusion
+* **Objective:** Master decision node, data arbitration (multiplexer), PID speed control, and Ackermann steering kinematics.
+* **Target Package:** `mentorpi_core`
+* **Dedicated Branches:** `feature/core-control`
+
+
+
 # ===== LIDAR =====
 **Rasbian => Terminator #1**
 
