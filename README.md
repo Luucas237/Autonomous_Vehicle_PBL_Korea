@@ -13,30 +13,30 @@ HW-67
 hiwonder
 
 # ===== LIDAR =====
-Rasbian => Terminator #1
+**Rasbian => Terminator #1**
 
 ~/.stop_ros.sh 
 
-For 2D:
+**For 2D:**
 
 ros2 launch slam slam.launch.py  
 
-For 3D:
+**For 3D:**
 
 ros2 launch slam rtabmap_slam.launch.py
 
 
-Rasbian => Terminator #2
+**Rasbian => Terminator #2**
 
 ros2 launch peripherals teleop_key_control.launch.py 
 
 
-Ubuntu ==> #1
+**Ubuntu ==> #1**
 
 xhost +local:root
 
 
-Ubuntu ==> #2
+**Ubuntu ==> #2**
 
 cd Autonomous_Vehicle_PBL_Korea
 
@@ -51,11 +51,11 @@ source install/setup.bash
 source /workspace/.typerc
 
 
-For 2D: 
+**For 2D:**
 
 ros2 launch slam rviz_slam.launch.py
 
 
-For 3D:
+**For 3D:**
 
 ros2 launch slam rviz_rtabmap.launch.py
