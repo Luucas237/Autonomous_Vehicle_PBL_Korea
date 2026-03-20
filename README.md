@@ -12,7 +12,6 @@ hiwonder
 
 # ===== LIDAR =====
 Rasbian => Terminator #1
-
 ~/.stop_ros.sh 
 
 For 2D:
@@ -23,7 +22,6 @@ ros2 launch slam rtabmap_slam.launch.py
 
 Rasbian => Terminator #2
 ros2 launch peripherals teleop_key_control.launch.py 
-
 
 
 Ubuntu ==> #1
