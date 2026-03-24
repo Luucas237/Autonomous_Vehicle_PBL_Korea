@@ -39,7 +39,7 @@ The development is divided into three distinct modules. Manufacturer packages (`
 ---
 
 ## ===== LIDAR =====
-> **📌 NOTE:** This section is a **visualization from the manufacturer's tutorial**. It is primarily used to test hardware functionality and mapping (SLAM) using out-of-the-box Hiwonder packages.
+> **NOTE:** This section is a **visualization from the manufacturer's tutorial**. It is primarily used to test hardware functionality and mapping (SLAM) using out-of-the-box Hiwonder packages.
 
 **Rasbian => Terminator #1**
 ```bash
@@ -92,7 +92,7 @@ ros2 launch slam rviz_rtabmap.launch.py
 ---
 
 ## ===== LANE DETECTION =====
-> **🚀 NOTE:** This is a **private project and custom implementation**. Here we run our own Python script for lane detection.
+> **NOTE:** This is a **private project and custom implementation**. Here we run our own Python script for lane detection.
 
 **Rasbian => Terminator #1**
 ```bash
