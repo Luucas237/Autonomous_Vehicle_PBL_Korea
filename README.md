@@ -39,14 +39,17 @@ The development is divided into three distinct modules. Manufacturer packages (`
 ---
 
 ## ===== LIDAR =====
-> **📌 Note:** Ta sekcja to **wizualizacja z tutoriala producenta**. Służy głównie do testowania poprawności działania sprzętu i mapowania (SLAM) za pomocą gotowych paczek Hiwonder.
+> **📌 NOTE:** This section is a **visualization from the manufacturer's tutorial**. It is primarily used to test hardware functionality and mapping (SLAM) using out-of-the-box Hiwonder packages.
 
 **Rasbian => Terminator #1**
+```bash
 ~/.stop_ros.sh 
+```
 
 **For 2D:**
+```bash
 ros2 launch slam slam.launch.py        
-
+```
 
 **For 3D:**
 ```bash
@@ -76,7 +79,8 @@ source install/setup.bash
 source /workspace/.typerc
 ```
 
-**For 2D:** ```bash
+**For 2D:** 
+```bash
 ros2 launch slam rviz_slam.launch.py
 ```
 
@@ -88,7 +92,7 @@ ros2 launch slam rviz_rtabmap.launch.py
 ---
 
 ## ===== LANE DETECTION =====
-> **Note:** To jest **prywatny projekt i autorska implementacja**. Uruchamiamy tutaj nasz własny skrypt w Pythonie (OpenCV) do detekcji linii i obliczania odchyłki dla systemu sterowania.
+> **🚀 NOTE:** This is a **private project and custom implementation**. Here we run our own Python script for lane detection.
 
 **Rasbian => Terminator #1**
 ```bash
@@ -106,13 +110,22 @@ xhost +local:root
 cd ~/PBL_Korea/Autonomous_Vehicle_PBL_Korea
 
 docker run -it --rm --net=host -e DISPLAY=$DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix -v ~/PBL_Korea/Autonomous_Vehicle_PBL_Korea:/workspace -w /workspace pbl_korea_ros2 bash
-```
 
-**Inside Docker (Ubuntu #2):**
-```bash
 colcon build --packages-select mentorpi_vision --symlink-install
 
 source install/setup.bash
 
 ros2 run mentorpi_vision lane_detector
+```
+**For testing (visualisation of cloud points)**
+```bash
+cd ~/PBL_Korea/Autonomous_Vehicle_PBL_Korea
+
+docker run -it --rm --net=host -e DISPLAY=$DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix -v ~/PBL_Korea/Autonomous_Vehicle_PBL_Korea:/workspace -w /workspace pbl_korea_ros2 bash
+
+colcon build --packages-select mentorpi_vision --symlink-install
+
+source install/setup.bash
+
+rviz2
 ```
