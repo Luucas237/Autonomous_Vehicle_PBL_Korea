@@ -117,7 +117,7 @@ source install/setup.bash
 
 ros2 run mentorpi_vision lane_detector
 ```
-**For testing (visualisation of cloud points)**
+**For testing (visualization of cloud points)**
 ```bash
 cd ~/PBL_Korea/Autonomous_Vehicle_PBL_Korea
 
