@@ -36,40 +36,83 @@ The development is divided into three distinct modules. Manufacturer packages (`
 * **Target Package:** `mentorpi_core`
 * **Dedicated Branches:** `feature/core-control`
 
+---
 
-
-# ===== LIDAR =====
+## ===== LIDAR =====
+> **📌 Note:** Ta sekcja to **wizualizacja z tutoriala producenta**. Służy głównie do testowania poprawności działania sprzętu i mapowania (SLAM) za pomocą gotowych paczek Hiwonder.
 
 **Rasbian => Terminator #1**
-*~/.stop_ros.sh* 
+~/.stop_ros.sh 
 
 **For 2D:**
-*ros2 launch slam slam.launch.py* 
+ros2 launch slam slam.launch.py        
+
 
 **For 3D:**
-*ros2 launch slam rtabmap_slam.launch.py*
+```bash
+ros2 launch slam rtabmap_slam.launch.py
+```
 
 **Rasbian => Terminator #2**
-*ros2 launch peripherals teleop_key_control.launch.py* 
+```bash
+ros2 launch peripherals teleop_key_control.launch.py 
+```
 
 **Ubuntu ==> #1**
-*xhost +local:root*
+```bash
+xhost +local:root
+```
 
 **Ubuntu ==> #2**
-*cd Autonomous_Vehicle_PBL_Korea*
+```bash
+cd ~/PBL_Korea/Autonomous_Vehicle_PBL_Korea
 
-*docker run -it --rm --net=host -e DISPLAY=$DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix -v ~/PBL_Korea/Autonomous_Vehicle_PBL_Korea:/workspace -w /workspace osrf/ros:humble-desktop bash*
+docker run -it --rm --net=host -e DISPLAY=$DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix -v ~/PBL_Korea/Autonomous_Vehicle_PBL_Korea:/workspace -w /workspace pbl_korea_ros2 bash
 
-*colcon build*
+colcon build
 
-*source /opt/ros/humble/setup.bash*
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+source /workspace/.typerc
+```
 
-*source install/setup.bash*
-
-*source /workspace/.typerc*
-
-**For 2D:** 
-*ros2 launch slam rviz_slam.launch.py*
+**For 2D:** ```bash
+ros2 launch slam rviz_slam.launch.py
+```
 
 **For 3D:**
-*ros2 launch slam rviz_rtabmap.launch.py*
+```bash
+ros2 launch slam rviz_rtabmap.launch.py
+```
+
+---
+
+## ===== LANE DETECTION =====
+> **Note:** To jest **prywatny projekt i autorska implementacja**. Uruchamiamy tutaj nasz własny skrypt w Pythonie (OpenCV) do detekcji linii i obliczania odchyłki dla systemu sterowania.
+
+**Rasbian => Terminator #1**
+```bash
+~/.stop_ros.sh
+ros2 launch peripherals depth_camera.launch.py
+```
+
+**Ubuntu ==> #1**
+```bash
+xhost +local:root
+```
+
+**Ubuntu ==> #2**
+```bash
+cd ~/PBL_Korea/Autonomous_Vehicle_PBL_Korea
+
+docker run -it --rm --net=host -e DISPLAY=$DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix -v ~/PBL_Korea/Autonomous_Vehicle_PBL_Korea:/workspace -w /workspace pbl_korea_ros2 bash
+```
+
+**Inside Docker (Ubuntu #2):**
+```bash
+colcon build --packages-select mentorpi_vision --symlink-install
+
+source install/setup.bash
+
+ros2 run mentorpi_vision lane_detector
+```
