@@ -3,7 +3,7 @@ from rclpy.node import Node
 from cv_bridge import CvBridge
 from sensor_msgs.msg import Image
 from std_msgs.msg import Float32
-from rclpy.qos import qos_profile_sensor_data  # <-- TO JEST KLUCZOWE!
+from rclpy.qos import qos_profile_sensor_data  
 
 import cv2 as cv
 import numpy as np
@@ -20,7 +20,7 @@ class ProcessFrame(Node):
         #
         self.frame_subscriber = self.create_subscription(
             Image, 
-            '/ascamera/camera_publisher/rgb0/image',  # <-- Jeśli w `ros2 topic list` nazwa jest inna, zmień to tutaj!
+            '/ascamera/camera_publisher/rgb0/image',  
             self.listener_callback,
             qos_profile_sensor_data     
         )
