@@ -9,4 +9,8 @@ RUN apt-get update && apt-get install -y \
     ros-humble-image-transport \
     ros-humble-image-publisher \
     ros-humble-camera-info-manager \
+    ros-humble-rviz2 \
+    ros-humble-rviz-common \
+    ros-humble-rviz-default-plugins \
+    ros-humble-nav2-rviz-plugins \
     && rm -rf /var/lib/apt/lists/*
