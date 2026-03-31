@@ -25,6 +25,7 @@ setup(
     entry_points={
         'console_scripts': [
             'lane_detector = mentorpi_vision.lane_detector:main',
+            'testingvision = mentorpi_vision.testingvision:main'
         ],
     },
 )
