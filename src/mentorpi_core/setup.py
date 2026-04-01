@@ -24,6 +24,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
+            'simple_drive = mentorpi_core.simple_drive:main',
         ],
     },
 )
