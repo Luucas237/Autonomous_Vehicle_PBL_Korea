@@ -117,15 +117,48 @@ source install/setup.bash
 
 ros2 run mentorpi_vision lane_detector
 ```
+
+**Ubuntu (webcam) => #1**
+```bash
+xhost +local:root
+```
+
 **For testing (visualization of cloud points)**
+```bash
+xhost +local:root
+```
 ```bash
 cd ~/PBL_Korea/Autonomous_Vehicle_PBL_Korea
 
-docker run -it --rm --net=host -e DISPLAY=$DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix -v ~/PBL_Korea/Autonomous_Vehicle_PBL_Korea:/workspace -w /workspace pbl_korea_ros2 bash
-
-colcon build --packages-select mentorpi_vision --symlink-install
-
-source install/setup.bash
-
-rviz2
+docker run -it --rm --net=host -e DISPLAY=$DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix --device=/dev/video0 -v ~/PBL_Korea/Autonomous_Vehicle_PBL_Korea:/workspace -w /workspace pbl_korea_ros2 bash
 ```
+```bash
+colcon build --packages-select mentorpi_vision --symlink-install
+source install/setup.bash
+ros2 run mentorpi_vision lane_detector_pc
+```
+## ===== LANE DETECTION ROBOT =====
+> **NOTE:** This is a **private project and custom implementation**. Here we run our own Python script for lane detection.
+
+**Rasbian => Terminator #1**
+```bash
+~/.stop_ros.sh
+ros2 launch peripherals depth_camera.launch.py
+```
+**Rasbian => Terminator #2**
+```bash
+~/.stop_ros.sh
+cd ~/shared/PBL_Korea/Autonomous_Vehicle_PBL_Korea
+colcon build --packages-select mentorpi_vision --symlink-install
+source install/setup.zsh
+ros2 run mentorpi_vision lane_detector_robot
+```
+
+**Rasbian (driving) => Terminator #3**
+```bash
+cd ~/shared/PBL_Korea/Autonomous_Vehicle_PBL_Korea
+colcon build --packages-select mentorpi_core --symlink-install
+source install/setup.zsh
+ros2 run mentorpi_core simple_drive
+```
+
