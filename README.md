@@ -122,11 +122,6 @@ ros2 run mentorpi_vision lane_detector
 ```bash
 xhost +local:root
 ```
-
-**For testing (visualization of cloud points)**
-```bash
-xhost +local:root
-```
 ```bash
 cd ~/PBL_Korea/Autonomous_Vehicle_PBL_Korea
 
