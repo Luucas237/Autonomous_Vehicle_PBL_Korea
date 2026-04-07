@@ -27,6 +27,7 @@ setup(
             'lane_detector = mentorpi_vision.lane_detector:main',
             'testingvision = mentorpi_vision.testingvision:main',
             'lane_detector_robot = mentorpi_vision.lane_detector_robot:main',
+            'lane_detector_pc = mentorpi_vision.lane_detector_pc:main'
         ],
     },
 )

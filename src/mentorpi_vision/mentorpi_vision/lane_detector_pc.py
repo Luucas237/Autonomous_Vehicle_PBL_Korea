@@ -1,10 +1,6 @@
-#!/usr/bin/env python3
 import rclpy
 from rclpy.node import Node
-from cv_bridge import CvBridge
-from sensor_msgs.msg import Image
 from std_msgs.msg import Float32
-from rclpy.qos import qos_profile_sensor_data  
 
 import cv2 as cv
 import numpy as np
@@ -13,10 +9,8 @@ import time
 
 class ProcessFrame(Node):
     def __init__(self):
-        super().__init__('lane_detector_robot_node')
-        self.bridge = CvBridge()
+        super().__init__('lane_detector_node')
         
-        # Parametry filtru FIR z artykułu naukowego
         self.fir_weights = np.array([0.075, 0.125, 0.175, 0.250, 0.175, 0.125, 0.075])
         
         self.left_history = deque(maxlen=7)
@@ -26,37 +20,47 @@ class ProcessFrame(Node):
         self.missing_right = 0
         self.last_offset = 0.0
 
-        self.frame_subscriber = self.create_subscription(
-            Image, 
-            '/ascamera/camera_publisher/rgb0/image',  
-            self.listener_callback,
-            qos_profile_sensor_data     
-        )
+        self.cap = cv.VideoCapture(0)
+        if not self.cap.isOpened():
+            self.get_logger().error("Nie można otworzyć kamery!")
 
         self.offset_value_publisher_ = self.create_publisher(Float32, 'offset_value', 10)
+        self.timer = self.create_timer(0.033, self.timer_callback)
 
         self.last_time = time.time()
         self.fps = 0.0
-        self.get_logger().info('Wizja odpalona, Zastosowano algorytm Hough + FIR.')
+        self.get_logger().info('Wizja gotowa')
 
-    def listener_callback(self, msg):
+    def timer_callback(self):
+        ret, frame = self.cap.read()
+        if not ret: return
+
         current_time = time.time()
         self.fps = 1.0 / (current_time - self.last_time + 0.0001)
         self.last_time = current_time
 
-        try:
-            frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
-            self.perform_detection(frame)
-        except Exception as e:
-            self.get_logger().error(f"Błąd konwersji obrazu: {e}")
+        self.perform_detection(frame)
+        cv.waitKey(1)
 
     def perform_detection(self, frame):
-        left_lines, right_lines = self.detect_white_lines(frame)
+        left_lines, right_lines, roi_debug = self.detect_white_lines(frame)
+
+        height, width, _ = frame.shape
+        y1 = int(height * 0.4)
+        y2 = height
+        ploty = np.linspace(y1, y2, num=20)
 
         left_poly, self.missing_left = self.fit_and_filter(left_lines, self.left_history, self.missing_left)
         right_poly, self.missing_right = self.fit_and_filter(right_lines, self.right_history, self.missing_right)
 
-        self.calculate_and_log(frame.shape, left_poly, right_poly)
+        left_fitx = self.get_fitx(left_poly, ploty)
+        right_fitx = self.get_fitx(right_poly, ploty)
+
+        output = frame.copy()
+        output, status = self.draw_guideline(output, ploty, left_fitx, right_fitx, width)
+
+        cv.imshow("Region of Interest", roi_debug)
+        cv.imshow("Podglad", output)
 
     def detect_white_lines(self, frame):
         hsv = cv.cvtColor(frame, cv.COLOR_BGR2HSV)
@@ -69,7 +73,6 @@ class ProcessFrame(Node):
 
         height, width = edges.shape
         roi_mask = np.zeros_like(edges)
-        
         top_width = int(width * 0.4)
         bottom_width = width
         top_y = int(height * 0.4)
@@ -84,6 +87,9 @@ class ProcessFrame(Node):
 
         cv.fillPoly(roi_mask, vertices, 255)
         roi_edges = cv.bitwise_and(edges, roi_mask)
+
+        roi_debug = cv.cvtColor(roi_edges, cv.COLOR_GRAY2BGR)
+        cv.polylines(roi_debug, [vertices], isClosed=True, color=(255, 0, 0), thickness=2)
 
         lines = cv.HoughLinesP(roi_edges, 1, np.pi/180, 15, minLineLength=7, maxLineGap=3)
 
@@ -100,7 +106,7 @@ class ProcessFrame(Node):
                     else: 
                         right_lines.append((x1, y1, x2, y2))
 
-        return left_lines, right_lines
+        return left_lines, right_lines, roi_debug
 
     def fit_and_filter(self, lines, history, missing_counter):
         if len(lines) == 0:
@@ -134,52 +140,55 @@ class ProcessFrame(Node):
         else:
             return np.mean(history, axis=0), missing_counter
 
-    def calculate_and_log(self, frame_shape, left_poly, right_poly):
-        height, width, _ = frame_shape
-        
-        center_status = "BRAK"
-        lines_detected = 0
+    def get_fitx(self, poly, ploty):
+        if poly is None: return None
+        return poly[0]*ploty**2 + poly[1]*ploty + poly[2]
+
+    def draw_guideline(self, frame, ploty, left_fitx, right_fitx, width):
+        center_status = "BRAK LINII"
         offset = self.last_offset
 
-        if left_poly is not None and right_poly is not None:
-            lines_detected = 2
-            
-            lookahead_y = int(height * 0.70)
-            
-            left_x = left_poly[0]*lookahead_y**2 + left_poly[1]*lookahead_y + left_poly[2]
-            right_x = right_poly[0]*lookahead_y**2 + right_poly[1]*lookahead_y + right_poly[2]
-            
-            mid_x = (left_x + right_x) / 2.0
-            offset = float(mid_x - (width / 2.0))
+        if left_fitx is not None and right_fitx is not None:
+            left_pts = np.int32(np.column_stack((left_fitx, ploty))).reshape((-1, 1, 2))
+            right_pts = np.int32(np.column_stack((right_fitx, ploty))).reshape((-1, 1, 2))
+
+            cv.polylines(frame, [left_pts], isClosed=False, color=(255, 0, 0), thickness=4)
+            cv.polylines(frame, [right_pts], isClosed=False, color=(255, 0, 0), thickness=4)
+
+            mid_fitx = (left_fitx + right_fitx) / 2
+            mid_pts = np.int32(np.column_stack((mid_fitx, ploty))).reshape((-1, 1, 2))
+            cv.polylines(frame, [mid_pts], isClosed=False, color=(0, 0, 255), thickness=3)
+
+            lookahead_idx = int(len(ploty) * 0.4) 
+            mid_x = mid_fitx[lookahead_idx]
+            cv.drawMarker(frame, (int(mid_x), int(ploty[lookahead_idx])), (0, 255, 255), cv.MARKER_CROSS, 20, 2)
+
+            offset = mid_x - (width // 2)
             self.last_offset = offset
 
-            if abs(offset) < width * 0.05: center_status = "SRODEK"
-            elif offset < 0: center_status = "LEWO"
-            else: center_status = "PRAWO"
-
-        elif left_poly is not None:
-            lines_detected = 1
-            center_status = "TYLKO_LEWA"
-        elif right_poly is not None:
-            lines_detected = 1
-            center_status = "TYLKO_PRAWA"
+        if abs(offset) < width * 0.05: center_status = "SRODEK"
+        elif offset < 0: center_status = "SKREC W LEWO"
+        else: center_status = "SKREC W PRAWO"
 
         msg = Float32()
-        msg.data = offset
+        msg.data = float(offset)
         self.offset_value_publisher_.publish(msg)
 
-        log_msg = f"[FPS: {self.fps:5.1f}] Wykryto: {lines_detected} | Status: {center_status:12} | Offset: {offset:6.1f}"
-        self.get_logger().info(log_msg)
+        cv.putText(frame, f"FPS: {self.fps:.1f} | Kierunek: {center_status}", (10, 30), cv.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        return frame, center_status
+
+    def destroy_node(self):
+        self.cap.release()
+        super().destroy_node()
 
 def main(args=None):
     rclpy.init(args=args)
     node = ProcessFrame()
-    try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass
+    try: rclpy.spin(node)
+    except KeyboardInterrupt: pass
     node.destroy_node()
     rclpy.shutdown()
+    cv.destroyAllWindows()
 
 if __name__ == '__main__':
     main()
