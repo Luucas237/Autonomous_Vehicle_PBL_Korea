@@ -142,7 +142,6 @@ cd ~/PBL_Korea/Autonomous_Vehicle_PBL_Korea
 
 docker run -it --rm --net=host -e DISPLAY=$DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix --device=/dev/video0 -v ~/PBL_Korea/Autonomous_Vehicle_PBL_Korea:/workspace -w /workspace pbl_korea_ros2 bash
 ```
-<<<<<<< HEAD
 
 ## ===== SIMULATION =====
 
@@ -172,7 +171,6 @@ pkill -9 gazebo
 
 ros2 launch mentorpi_sim sim_robot.launch.py
 ```
-=======
 ```bash
 colcon build --packages-select mentorpi_vision --symlink-install
 source install/setup.bash
@@ -203,4 +201,3 @@ source install/setup.zsh
 ros2 run mentorpi_core simple_drive
 ```
 
->>>>>>> 4760bb8589aa46d411c9a36b3e1b2d157aaa9471
