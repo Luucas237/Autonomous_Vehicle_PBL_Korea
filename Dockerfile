@@ -13,4 +13,5 @@ RUN apt-get update && apt-get install -y \
     ros-humble-rviz-common \
     ros-humble-rviz-default-plugins \
     ros-humble-nav2-rviz-plugins \
+    ros-humble-ros-gz\
     && rm -rf /var/lib/apt/lists/*

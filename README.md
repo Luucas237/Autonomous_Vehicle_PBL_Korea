@@ -15,6 +15,21 @@
 * Command: `ssh pi@192.168.149.1`
 * Password: `raspberrypi`
 
+**Docker build**
+```bash
+
+docker run -it --rm \
+  --net=host \
+  -e DISPLAY=$DISPLAY \
+  -v /tmp/.X11-unix:/tmp/.X11-unix \
+  --device=/dev/dri:/dev/dri \
+  -v ~/PBL_Korea/Autonomous_Vehicle_PBL_Korea:/workspace \
+  -w /workspace \
+  pbl_korea_ros2 bash
+
+docker build -t pbl_korea_ros2 .
+```
+
 ---
 
 ## Project Architecture & Team Workflow
@@ -128,4 +143,33 @@ colcon build --packages-select mentorpi_vision --symlink-install
 source install/setup.bash
 
 rviz2
+```
+
+## ===== SIMULATION =====
+
+```bash
+cd ~/PBL_Korea/Autonomous_Vehicle_PBL_Korea
+
+docker run -it --rm \
+  --net=host \
+  -e DISPLAY=$DISPLAY \
+  -v /tmp/.X11-unix:/tmp/.X11-unix:rw \
+  --device=/dev/dri:/dev/dri \
+  -e XDG_RUNTIME_DIR=/tmp \
+  -e WAYLAND_DISPLAY=$WAYLAND_DISPLAY \
+  -v ~/PBL_Korea/Autonomous_Vehicle_PBL_Korea:/workspace \
+  -w /workspace \
+  pbl_korea_ros2 bash
+```
+```bash
+apt-get update && apt-get install -y ros-humble-ros-gz ros-humble-xacro
+```
+```bash
+colcon build --packages-select mentorpi_sim
+
+source install/setup.bash
+pkill -9 ign
+pkill -9 gazebo
+
+ros2 launch mentorpi_sim sim_robot.launch.py
 ```
