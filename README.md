@@ -17,17 +17,20 @@
 
 **Docker build**
 ```bash
+docker build -t pbl_korea_ros2 .
+
+xhost +local:root
 
 docker run -it --rm \
   --net=host \
   -e DISPLAY=$DISPLAY \
-  -v /tmp/.X11-unix:/tmp/.X11-unix \
+  -v /tmp/.X11-unix:/tmp/.X11-unix:rw \
   --device=/dev/dri:/dev/dri \
+  -e XDG_RUNTIME_DIR=/tmp \
+  -e WAYLAND_DISPLAY=$WAYLAND_DISPLAY \
   -v ~/PBL_Korea/Autonomous_Vehicle_PBL_Korea:/workspace \
   -w /workspace \
   pbl_korea_ros2 bash
-
-docker build -t pbl_korea_ros2 .
 ```
 
 ---
