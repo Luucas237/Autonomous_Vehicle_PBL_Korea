@@ -8,7 +8,6 @@ class SimpleDriveController(Node):
     def __init__(self):
         super().__init__('simple_drive_node')
         
-        # Subskrybujemy dane z wizji
         self.offset_sub = self.create_subscription(
             Float32,
             'offset_value',
@@ -16,26 +15,35 @@ class SimpleDriveController(Node):
             10
         )
         
-        # Publikujemy prędkość na standardowy temat ROS 2 do silników
         self.cmd_vel_pub = self.create_publisher(Twist, '/cmd_vel', 10)
         
-        self.get_logger().info('Sterownik jazdy uruchomiony. Czekam na komendy z wizji...')
+        self.base_speed = 0.20
+        self.min_speed = 0.06
+        self.kp = 0.008
+        self.kd = 0.003
+        self.last_offset = 0.0
 
     def vision_callback(self, msg):
         twist = Twist()
+        offset = msg.data 
+
+        if offset == 999.0:
+            twist.linear.x = 0.0
+            twist.angular.z = 0.0
+            self.cmd_vel_pub.publish(twist)
+            return
+
+        error_diff = offset - self.last_offset
+        steering_output = (offset * self.kp) + (error_diff * self.kd)
         
-        # Jeśli wizja opublikowała 999.0, to znaczy, że nie widzi linii
-        if msg.data == 999.0:
-            twist.linear.x = 0.0  # ZATRZYMAJ SIĘ
-            twist.angular.z = 0.0 # NIE SKRĘCAJ
-            self.get_logger().info('Brak linii -> STOP')
-        else:
-            # Widzi linię! Jedziemy powoli do przodu (0.15 m/s)
-            twist.linear.x = 0.15  
-            twist.angular.z = 0.0 # Na razie nie skręcamy, tak jak prosiłeś
-            self.get_logger().info('Widzę linię -> JAZDA DO PRZODU')
-            
-        # Wysyłamy komendę do fizycznych silników
+        twist.angular.z = -steering_output 
+
+        curve_factor = abs(offset) * 0.0012
+        dynamic_speed = self.base_speed - curve_factor
+        
+        twist.linear.x = max(self.min_speed, dynamic_speed)
+
+        self.last_offset = offset
         self.cmd_vel_pub.publish(twist)
 
 def main(args=None):
@@ -44,12 +52,10 @@ def main(args=None):
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
-        # Zatrzymanie awaryjne przy wyłączaniu skryptu (Ctrl+C)
         emergency_stop = Twist()
         emergency_stop.linear.x = 0.0
         emergency_stop.angular.z = 0.0
         node.cmd_vel_pub.publish(emergency_stop)
-        pass
     
     node.destroy_node()
     rclpy.shutdown()
