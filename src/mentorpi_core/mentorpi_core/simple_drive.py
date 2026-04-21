@@ -3,6 +3,7 @@ import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Float32
 from geometry_msgs.msg import Twist
+import time  # <-- Ważny import do opóźnienia przy wyłączaniu
 
 class SimpleDriveController(Node):
     def __init__(self):
@@ -49,16 +50,25 @@ class SimpleDriveController(Node):
 def main(args=None):
     rclpy.init(args=args)
     node = SimpleDriveController()
+    
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
+        # --- SEKWENCJA AWARYJNEGO ZATRZYMANIA ---
+        node.get_logger().info("Stopping motors..")
+        
         emergency_stop = Twist()
         emergency_stop.linear.x = 0.0
-        emergency_stop.angular.z = 0.0
+        emergency_stop.angular.z = 0.0 
+        
         node.cmd_vel_pub.publish(emergency_stop)
-    
-    node.destroy_node()
-    rclpy.shutdown()
+        
+        
+        time.sleep(0.2) 
+        
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
 
 if __name__ == '__main__':
     main()
