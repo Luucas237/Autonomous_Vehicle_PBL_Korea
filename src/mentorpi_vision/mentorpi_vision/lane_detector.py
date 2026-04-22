@@ -15,14 +15,12 @@ class ProcessFrame(Node):
         super().__init__('lane_detector_laptop_node')
         self.bridge = CvBridge()
         
-        # Variables for Hybrid Polynomial Filter
         self.fir_weights = np.array([0.075, 0.125, 0.175, 0.250, 0.175, 0.125, 0.075])
         self.left_history = deque(maxlen=7)
         self.right_history = deque(maxlen=7)
         self.missing_left = 0
         self.missing_right = 0
 
-        # Subscriptions and Publishers
         self.frame_subscriber = self.create_subscription(
             Image, 
             '/ascamera/camera_publisher/rgb0/image',  
@@ -34,7 +32,6 @@ class ProcessFrame(Node):
         self.color_range_publisher = self.create_publisher(Int32MultiArray, '/mentorpi/vision/hsv_thresholds', 10)
         self.curve_publisher = self.create_publisher(Float32, '/mentorpi/vision/curve_threshold', 10)
 
-        # State Variables
         self.latest_frame = None
         self.last_frame_time = 0.0
         self.fps = 0.0
@@ -46,7 +43,6 @@ class ProcessFrame(Node):
         self.frame_w = 640 
         self.frame_h = 480
 
-        # --- GUI Variables ---
         self.target_bgr = (0, 0, 0)
         self.input_text = "0.0005"
         self.is_typing = False
@@ -55,7 +51,6 @@ class ProcessFrame(Node):
         cv.namedWindow(self.window_name)
         cv.setMouseCallback(self.window_name, self.mouse_callback)
         
-        # 6 Trackbars for HSV
         cv.createTrackbar("H Min", self.window_name, 0, 180, self.nothing)
         cv.createTrackbar("H Max", self.window_name, 180, 180, self.nothing)
         cv.createTrackbar("S Min", self.window_name, 0, 255, self.nothing)
@@ -96,7 +91,6 @@ class ProcessFrame(Node):
 
     def mouse_callback(self, event, x, y, flags, param):
         if event == cv.EVENT_LBUTTONDOWN:
-            # 1. Click on Image (Pipette)
             if x < self.frame_w and y < self.frame_h and self.latest_frame is not None:
                 bgr_pixel = self.latest_frame[y, x]
                 self.target_bgr = (int(bgr_pixel[0]), int(bgr_pixel[1]), int(bgr_pixel[2]))
@@ -110,29 +104,20 @@ class ProcessFrame(Node):
                 cv.setTrackbarPos("S Max", self.window_name, min(255, int(s) + 40))
                 cv.setTrackbarPos("V Min", self.window_name, max(0, int(v) - 40))
                 cv.setTrackbarPos("V Max", self.window_name, min(255, int(v) + 40))
-                self.get_logger().info(f"New color picked! HSV: {hsv_pixel}")
                 self.is_typing = False
 
-            # Click on Right Panel
             elif x >= self.frame_w:
                 rx = x - self.frame_w 
                 ry = y
                 
-                # Check Text Input Box
                 if 10 <= rx <= 150 and 450 <= ry <= 490:
                     self.is_typing = True
-                
-                # Check SAVE Button
                 elif 160 <= rx <= 250 and 450 <= ry <= 490:
                     self.save_curve_threshold()
-                
-                # Check RESET Button (Bottom Right Area)
-                # Note: Panel width is ~380, Panel height is 2x480 = 960
                 elif 380 - 130 <= rx <= 380 - 20 and 960 - 60 <= ry <= 960 - 20:
                     self.reset_defaults()
-                
                 else:
-                    self.is_typing = False # Unfocus text box if clicked elsewhere
+                    self.is_typing = False
 
     def listener_callback(self, msg):
         current_time = time.time()
@@ -146,7 +131,6 @@ class ProcessFrame(Node):
         self.last_frame_time = current_time
 
     def gui_update_loop(self):
-        # 1. READ SLIDERS & PUBLISH
         h_min = cv.getTrackbarPos("H Min", self.window_name)
         h_max = cv.getTrackbarPos("H Max", self.window_name)
         s_min = cv.getTrackbarPos("S Min", self.window_name)
@@ -168,7 +152,6 @@ class ProcessFrame(Node):
         msg_curve.data = float(self.current_curve_threshold)
         self.curve_publisher.publish(msg_curve)
 
-        # 2. STATUS & PROCESSING
         time_since_last_frame = time.time() - self.last_frame_time
         
         if self.latest_frame is None or time_since_last_frame > 1.0:
@@ -188,7 +171,6 @@ class ProcessFrame(Node):
 
         left_panel = np.vstack((rgb_view, mask_view))
 
-        # 3. CONSTRUCT RIGHT PANEL
         panel_w = 380
         panel_h = left_panel.shape[0]
         right_panel = np.zeros((panel_h, panel_w, 3), dtype=np.uint8)
@@ -206,24 +188,19 @@ class ProcessFrame(Node):
         cv.putText(right_panel, f"FPS: {self.fps:.1f}", (10, 320), cv.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
         cv.putText(right_panel, f"Offset: {self.current_offset:.1f} px", (10, 360), cv.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
         
-        # --- CUSTOM TEXT INPUT FOR CURVE THRESHOLD ---
         cv.putText(right_panel, "CURVE THRESHOLD:", (10, 430), cv.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
         
-        # Draw Input Box
         box_color = (100, 255, 100) if self.is_typing else (255, 255, 255)
         cv.rectangle(right_panel, (10, 450), (150, 490), (50, 50, 50), -1)
         cv.rectangle(right_panel, (10, 450), (150, 490), box_color, 2)
         
-        # Blink cursor logic
         cursor = "_" if self.is_typing and int(time.time() * 2) % 2 == 0 else ""
         cv.putText(right_panel, self.input_text + cursor, (20, 478), cv.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
 
-        # Draw SAVE Button
         cv.rectangle(right_panel, (160, 450), (250, 490), (0, 150, 0), -1)
         cv.rectangle(right_panel, (160, 450), (250, 490), (255, 255, 255), 2)
         cv.putText(right_panel, "SAVE", (182, 476), cv.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
 
-        # --- DRAW RESET BUTTON (Bottom Right) ---
         btn_w, btn_h = 110, 40
         btn_x1, btn_y1 = panel_w - btn_w - 20, panel_h - btn_h - 20
         btn_x2, btn_y2 = panel_w - 20, panel_h - 20
@@ -231,18 +208,16 @@ class ProcessFrame(Node):
         cv.rectangle(right_panel, (btn_x1, btn_y1), (btn_x2, btn_y2), (255, 255, 255), 2)
         cv.putText(right_panel, "RESET", (btn_x1 + 25, btn_y1 + 25), cv.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 2)
 
-        # 4. RENDER FINAL WINDOW & CAPTURE KEYBOARD INPUT
         final_ui = np.hstack((left_panel, right_panel))
         cv.imshow(self.window_name, final_ui)
         
-        # Keyboard Input Logic for the custom text box
         key = cv.waitKey(1) & 0xFF
         if key != 255 and self.is_typing:
-            if key == 8 or key == 127: # Backspace
+            if key == 8 or key == 127: 
                 self.input_text = self.input_text[:-1]
-            elif key == 13 or key == 10: # Enter Key = Save
+            elif key == 13 or key == 10: 
                 self.save_curve_threshold()
-            elif chr(key) in "0123456789.": # Allow only numbers and dot
+            elif chr(key) in "0123456789.": 
                 self.input_text += chr(key)
 
     def detect_lines_core(self, frame, lower_bound, upper_bound):
@@ -252,10 +227,11 @@ class ProcessFrame(Node):
         height, width = mask.shape
         roi_mask = np.zeros_like(mask)
 
+        # LEKKO ZMODYFIKOWANE ROI: Sięga odrobinę szerzej na bokach
         y_bottom = height
         y_mid = int(height * 0.7)
-        y_top = int(height * 0.55)
-        x_top_left = int(width * 0.25)
+        y_top = int(height * 0.50) # Było 0.55 - patrzy minimalnie dalej
+        x_top_left = int(width * 0.25) # Było 0.25 - szerszy łuk
         x_top_right = int(width * 0.75)
 
         vertices = np.array([[ 
@@ -271,21 +247,46 @@ class ProcessFrame(Node):
         cv.polylines(roi, [vertices], isClosed=True, color=127, thickness=2)
         mask_preview_bgr = cv.cvtColor(roi, cv.COLOR_GRAY2BGR)
 
-        kernel = np.ones((5, 5), np.uint8)
-        roi_clean = cv.erode(roi, kernel, iterations=1)
-        roi_clean = cv.dilate(roi_clean, kernel, iterations=2)
+        # 1. ROZMYCIE
+        roi_blurred = cv.GaussianBlur(roi, (7, 7), 0)
 
-        edges = cv.Canny(roi_clean, 50, 150)
-        lines = cv.HoughLinesP(edges, 1, np.pi/180, 50, minLineLength=60, maxLineGap=20)
+        # 2. MORFOLOGIA
+        kernel = np.ones((7, 7), np.uint8) 
+        roi_clean = cv.erode(roi_blurred, kernel, iterations=1)
+        roi_clean = cv.dilate(roi_clean, kernel, iterations=4) 
+
+        # 3. KRAWĘDZIE
+        edges = cv.Canny(roi_clean, 65, 150)
+
+        # 4. DETEKCJA HOUGH
+        lines = cv.HoughLinesP(
+            edges, 
+            1, 
+            np.pi/180, 
+            70,              
+            minLineLength=70,
+            maxLineGap=60    
+        )
 
         left_lines, right_lines = [], []
+        raw_lines_count = 0
+
         if lines is not None:
+            raw_lines_count = len(lines)
             for line in lines:
                 for x1, y1, x2, y2 in line:
                     slope = (y2 - y1) / (x2 - x1 + 0.0001)
-                    if abs(slope) < 0.15: continue
-                    if (x1 + x2) / 2 < width / 2: left_lines.append((x1, y1, x2, y2))
-                    else: right_lines.append((x1, y1, x2, y2))
+                    
+                    if abs(slope) < 0.25: 
+                        continue
+                        
+                    if (x1 + x2) / 2 < width / 2: 
+                        left_lines.append((x1, y1, x2, y2))
+                    else: 
+                        right_lines.append((x1, y1, x2, y2))
+
+        # --- LICZNIK LINII NA EKRANIE MASKI ---
+        cv.putText(mask_preview_bgr, f"Hough Lines Detected: {raw_lines_count}", (10, 30), cv.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
 
         return left_lines, right_lines, mask_preview_bgr
 
