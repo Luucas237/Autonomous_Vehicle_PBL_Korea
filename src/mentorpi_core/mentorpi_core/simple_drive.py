@@ -55,19 +55,21 @@ def main(args=None):
         rclpy.spin(node)
     except KeyboardInterrupt:
         # --- SEKWENCJA AWARYJNEGO ZATRZYMANIA ---
-        node.get_logger().info("Stopping motors..")
+        node.get_logger().info("Wykryto Ctrl+C! Wymuszam zatrzymanie silników...")
         
         emergency_stop = Twist()
         emergency_stop.linear.x = 0.0
         emergency_stop.angular.z = 0.0 
         
-        node.cmd_vel_pub.publish(emergency_stop)
-        
-        
-        time.sleep(0.2) 
-        
+        # Bombardujemy sterownik 3 razy, ALE tym razem każemy ROS-owi to fizycznie wysłać!
+        for _ in range(3):
+            node.cmd_vel_pub.publish(emergency_stop)
+            # To jest kluczowe: zamiast time.sleep(), kręcimy silnikiem ROSa przez 0.1s
+            rclpy.spin_once(node, timeout_sec=0.1)
+            
     finally:
         node.destroy_node()
+        # Ważne: shutdown wywołujemy dopiero po tym, jak spin_once wysłało pakiety
         rclpy.shutdown()
 
 if __name__ == '__main__':
