@@ -56,6 +56,40 @@ The development is divided into three distinct modules. Manufacturer packages (`
 
 ---
 
+## ===== Launching =====
+**Rasbian => Terminator for 2D scanning**
+```bash
+ros2 launch slam slam.launch.py    
+```
+**Rasbian => Terminator #2**
+```bash
+cd ~/shared/PBL_Korea/Autonomous_Vehicle_PBL_Korea
+
+colcon build --packages-select mentorpi_core --symlink-install
+
+source install/setup.zsh
+
+ros2 run mentorpi_core robot_start.launch.py
+```
+
+**Ubuntu => Terminal**
+```bash
+xhost +local:root
+```
+```bash 
+cd ~/PBL_Korea/Autonomous_Vehicle_PBL_Korea
+
+docker run -it --rm --net=host -e DISPLAY=$DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix -v ~/PBL_Korea/Autonomous_Vehicle_PBL_Korea:/workspace -w /workspace pbl_korea_ros2 bash
+
+colcon build --packages-select mentorpi_core --symlink-install
+
+source install/setup.bash
+
+ros2 run mentorpi_core pc_start.launch.py
+```
+
+
+## ===== Archive =====
 ## ===== LIDAR =====
 > **NOTE:** This section is a **visualization from the manufacturer's tutorial**. It is primarily used to test hardware functionality and mapping (SLAM) using out-of-the-box Hiwonder packages.
 
