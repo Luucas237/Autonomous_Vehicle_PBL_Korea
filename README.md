@@ -238,4 +238,10 @@ source install/setup.bash
 ros2 run mentorpi_vision lane_detector_pc
 ```
 
+```bash
+apt install ros-humble-foxglove-bridge -y
+
+ros2 launch foxglove_bridge foxglove_bridge_launch.xml
+```
+
 
