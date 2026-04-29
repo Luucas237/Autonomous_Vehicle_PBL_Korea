@@ -13,10 +13,12 @@ model.conf = 0.30  #odczytuje z wieksza pewnoscia
 model.iou = 0.45 
 model.multi_label = False 
 
-cap = cv2.VideoCapture(0)
+import sys
+camera_id = int(sys.argv[1]) if len(sys.argv) > 1 else 0 #pobiera kamere urzadzenia
+cap = cv2.VideoCapture(camera_id)
 
 if not cap.isOpened():
-    print("BŁĄD: Nie można otworzyć kamery. Sprawdź czy inna aplikacja jej nie używa!")
+    print(f"BŁĄD: Nie można otworzyć kamery o ID: {camera_id}")
     exit()
 
 print(f"Klasy modelu: {model.names}")
