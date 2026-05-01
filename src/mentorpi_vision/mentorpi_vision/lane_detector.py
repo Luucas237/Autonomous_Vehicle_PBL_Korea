@@ -221,44 +221,46 @@ class ProcessFrame(Node):
                 self.input_text += chr(key)
 
     def detect_lines_core(self, frame, lower_bound, upper_bound):
-        hsv = cv.cvtColor(frame, cv.COLOR_BGR2HSV)
+        height, width = frame.shape[:2]
+        
+        # 1. TWARDE ODCIĘCIE GÓRY (CROP) - Drastyczna redukcja obliczeń
+        crop_y = int(height * 0.45) # Odcinamy górne 45% obrazu (zostaje dół)
+        cropped_frame = frame[crop_y:, :]
+        crop_h, crop_w = cropped_frame.shape[:2]
+
+        # 2. Przetwarzanie tylko dolnego wycinka (dużo szybsze działanie)
+        hsv = cv.cvtColor(cropped_frame, cv.COLOR_BGR2HSV)
         mask = cv.inRange(hsv, lower_bound, upper_bound)
 
-        height, width = mask.shape
+        # 3. Zachowanie trapezoidalnego ROI na bokach (dopasowane do nowego rozmiaru)
         roi_mask = np.zeros_like(mask)
-
-        # LEKKO ZMODYFIKOWANE ROI: Sięga odrobinę szerzej na bokach
-        y_bottom = height
-        y_mid = int(height * 0.7)
-        y_top = int(height * 0.50) # Było 0.55 - patrzy minimalnie dalej
-        x_top_left = int(width * 0.25) # Było 0.25 - szerszy łuk
-        x_top_right = int(width * 0.75)
+        y_bottom = crop_h
+        y_mid = int(crop_h * 0.5)
+        y_top = 0
+        x_top_left = int(crop_w * 0.25)
+        x_top_right = int(crop_w * 0.75)
 
         vertices = np.array([[ 
-            (0, y_bottom), (width, y_bottom), (width, y_mid), 
+            (0, y_bottom), (crop_w, y_bottom), (crop_w, y_mid), 
             (x_top_right, y_top), (x_top_left, y_top), (0, y_mid) 
         ]], dtype=np.int32)
 
-        roi_debug = cv.cvtColor(mask, cv.COLOR_GRAY2BGR)
-        cv.polylines(roi_debug, [vertices], isClosed=True, color=(255, 0, 0), thickness=2)
         cv.fillPoly(roi_mask, vertices, 255)
-        
         roi = cv.bitwise_and(mask, roi_mask)
-        cv.polylines(roi, [vertices], isClosed=True, color=127, thickness=2)
-        mask_preview_bgr = cv.cvtColor(roi, cv.COLOR_GRAY2BGR)
+        
+        # Podgląd maski - przygotowujemy pustą czarną kanwę wielkości całego okna GUI
+        mask_preview_bgr = np.zeros((height, width, 3), dtype=np.uint8)
+        mask_preview_cropped = cv.cvtColor(roi, cv.COLOR_GRAY2BGR)
+        cv.polylines(mask_preview_cropped, [vertices], isClosed=True, color=(127, 127, 127), thickness=2)
 
-        # 1. ROZMYCIE
+        # 4. ROZMYCIE, MORFOLOGIA I KRAWĘDZIE (teraz znacznie szybsze na mniejszej matrycy)
         roi_blurred = cv.GaussianBlur(roi, (7, 7), 0)
-
-        # 2. MORFOLOGIA
         kernel = np.ones((7, 7), np.uint8) 
         roi_clean = cv.erode(roi_blurred, kernel, iterations=1)
         roi_clean = cv.dilate(roi_clean, kernel, iterations=4) 
-
-        # 3. KRAWĘDZIE
         edges = cv.Canny(roi_clean, 65, 150)
 
-        # 4. DETEKCJA HOUGH
+        # 5. DETEKCJA HOUGH
         lines = cv.HoughLinesP(
             edges, 
             1, 
@@ -275,18 +277,25 @@ class ProcessFrame(Node):
             raw_lines_count = len(lines)
             for line in lines:
                 for x1, y1, x2, y2 in line:
-                    slope = (y2 - y1) / (x2 - x1 + 0.0001)
+                    # KLUCZOWA POPRAWKA: Przesuwamy koordynaty Y z powrotem do 
+                    # skali pełnego obrazka, dodając wartość 'crop_y'.
+                    real_y1 = y1 + crop_y
+                    real_y2 = y2 + crop_y
+                    
+                    slope = (real_y2 - real_y1) / (x2 - x1 + 0.0001)
                     
                     if abs(slope) < 0.25: 
                         continue
                         
                     if (x1 + x2) / 2 < width / 2: 
-                        left_lines.append((x1, y1, x2, y2))
+                        left_lines.append((x1, real_y1, x2, real_y2))
                     else: 
-                        right_lines.append((x1, y1, x2, y2))
+                        right_lines.append((x1, real_y1, x2, real_y2))
 
-        # --- LICZNIK LINII NA EKRANIE MASKI ---
-        cv.putText(mask_preview_bgr, f"Hough Lines Detected: {raw_lines_count}", (10, 30), cv.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+        # --- Aktualizacja podglądu maski dla interfejsu ---
+        cv.putText(mask_preview_cropped, f"Hough Lines Detected: {raw_lines_count}", (10, 30), cv.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+        # Wklejamy przetworzony wycinek z powrotem na jego prawidłowe miejsce (na dół obrazu)
+        mask_preview_bgr[crop_y:, :] = mask_preview_cropped
 
         return left_lines, right_lines, mask_preview_bgr
 

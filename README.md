@@ -69,23 +69,50 @@ colcon build --packages-select mentorpi_core --symlink-install
 
 source install/setup.zsh
 
-ros2 run mentorpi_core robot_start.launch.py
+ros2 launch mentorpi_core robot_start.launch.py
 ```
 
 **Ubuntu => Terminal**
-```bash
-xhost +local:root
-```
+
 ```bash 
 cd ~/PBL_Korea/Autonomous_Vehicle_PBL_Korea
 
-docker run -it --rm --net=host -e DISPLAY=$DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix -v ~/PBL_Korea/Autonomous_Vehicle_PBL_Korea:/workspace -w /workspace pbl_korea_ros2 bash
+docker run -it --rm \
+  --net=host \
+  -e DISPLAY=$DISPLAY \
+  -v /tmp/.X11-unix:/tmp/.X11-unix:rw \
+  --device=/dev/dri:/dev/dri \
+  -e XDG_RUNTIME_DIR=/tmp \
+  -e WAYLAND_DISPLAY=$WAYLAND_DISPLAY \
+  -v ~/PBL_Korea/Autonomous_Vehicle_PBL_Korea:/workspace \
+  -w /workspace \
+  pbl_korea_ros2 bash
 
+
+```bash
+xhost +local:root
+```
+
+## ===== MAIN DETECTION =====
+
+```bash
 colcon build --packages-select mentorpi_core --symlink-install
 
 source install/setup.bash
 
-ros2 run mentorpi_core pc_start.launch.py
+ros2 launch mentorpi_core pc_start.launch.py
+```
+
+## ===== SIMULATION =====
+
+```bash
+colcon build --packages-select mentorpi_sim
+
+source install/setup.bash
+pkill -9 ign
+pkill -9 gazebo
+
+ros2 launch mentorpi_sim sim_robot.launch.py
 ```
 
 
@@ -204,44 +231,7 @@ source install/setup.zsh
 ros2 run mentorpi_core simple_drive
 ```
 
-## ===== SIMULATION =====
 
-```bash
-cd ~/PBL_Korea/Autonomous_Vehicle_PBL_Korea
 
-docker run -it --rm \
-  --net=host \
-  -e DISPLAY=$DISPLAY \
-  -v /tmp/.X11-unix:/tmp/.X11-unix:rw \
-  --device=/dev/dri:/dev/dri \
-  -e XDG_RUNTIME_DIR=/tmp \
-  -e WAYLAND_DISPLAY=$WAYLAND_DISPLAY \
-  -v ~/PBL_Korea/Autonomous_Vehicle_PBL_Korea:/workspace \
-  -w /workspace \
-  pbl_korea_ros2 bash
-```
-```bash
-apt-get update && apt-get install -y ros-humble-ros-gz ros-humble-xacro
-```
-```bash
-colcon build --packages-select mentorpi_sim
-
-source install/setup.bash
-pkill -9 ign
-pkill -9 gazebo
-
-ros2 launch mentorpi_sim sim_robot.launch.py
-```
-```bash
-colcon build --packages-select mentorpi_vision --symlink-install
-source install/setup.bash
-ros2 run mentorpi_vision lane_detector_pc
-```
-
-```bash
-apt install ros-humble-foxglove-bridge -y
-
-ros2 launch foxglove_bridge foxglove_bridge_launch.xml
-```
 
 

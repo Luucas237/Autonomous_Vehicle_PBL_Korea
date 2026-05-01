@@ -23,7 +23,6 @@ class ProcessFrame(Node):
         self.missing_right = 0
         self.last_offset = 0.0
 
-        # === ZMIANA: Temat z wirtualnej kamery z Gazebo ===
         self.frame_subscriber = self.create_subscription(
             Image, 
             '/camera/image_raw',  
@@ -32,12 +31,15 @@ class ProcessFrame(Node):
         )
 
         self.offset_value_publisher_ = self.create_publisher(Float32, 'offset_value', 10)
-        # Aby wrzucić porysowany obraz np. do Foxglove'a
+        
+        # === NOWE PUBLISHERY DO FOXGLOVE ===
         self.annotated_image_publisher = self.create_publisher(Image, '/camera/image_annotated', 10)
+        self.mask_publisher = self.create_publisher(Image, '/camera/image_mask', 10)
+        self.roi_publisher = self.create_publisher(Image, '/camera/image_roi', 10)
 
         self.last_time = time.time()
         self.fps = 0.0
-        self.get_logger().info('Wizja (Symulacja) odpalona!')
+        self.get_logger().info('Wizja (Symulacja) odpalona! Dodano podgląd Maski i ROI.')
 
     def listener_callback(self, msg):
         current_time = time.time()
@@ -51,7 +53,8 @@ class ProcessFrame(Node):
             self.get_logger().error(f"Błąd konwersji obrazu: {e}")
 
     def perform_detection(self, frame):
-        left_lines, right_lines = self.detect_white_lines(frame)
+        # Pobieramy teraz 3 obrazy z funkcji detekcji
+        left_lines, right_lines, mask_bgr, roi_bgr = self.detect_white_lines(frame)
 
         left_poly, self.missing_left = self.fit_and_filter(left_lines, self.left_history, self.missing_left)
         right_poly, self.missing_right = self.fit_and_filter(right_lines, self.right_history, self.missing_right)
@@ -59,41 +62,67 @@ class ProcessFrame(Node):
         output = frame.copy()
         output, status = self.draw_guideline(output, left_poly, right_poly)
         
-        # Publikacja porysowanego obrazu do Foxglove!
+        # Publikacja wszystkich 3 strumieni wideo do Foxglove
         try:
-            annotated_msg = self.bridge.cv2_to_imgmsg(output, encoding="bgr8")
-            self.annotated_image_publisher.publish(annotated_msg)
+            self.annotated_image_publisher.publish(self.bridge.cv2_to_imgmsg(output, encoding="bgr8"))
+            self.mask_publisher.publish(self.bridge.cv2_to_imgmsg(mask_bgr, encoding="bgr8"))
+            self.roi_publisher.publish(self.bridge.cv2_to_imgmsg(roi_bgr, encoding="bgr8"))
         except Exception as e:
             pass
 
     def detect_white_lines(self, frame):
-        hsv = cv.cvtColor(frame, cv.COLOR_BGR2HSV)
+        height, width = frame.shape[:2]
+        
+        # 1. TWARDY CROP (Obniżenie do 55%)
+        crop_y = int(height * 0.65) 
+        cropped_frame = frame[crop_y:, :]
+        crop_h, crop_w = cropped_frame.shape[:2]
+
+        # 2. MASKA HSV NA CROP
+        hsv = cv.cvtColor(cropped_frame, cv.COLOR_BGR2HSV)
         lower_white = np.array([0, 0, 180], dtype="uint8")
         upper_white = np.array([180, 30, 255], dtype="uint8")
         mask = cv.inRange(hsv, lower_white, upper_white)
 
-        blur = cv.GaussianBlur(mask, (5, 5), 0)
-        edges = cv.Canny(blur, 50, 150)
-
-        height, width = edges.shape
-        roi_mask = np.zeros_like(edges)
-        
-        top_width = int(width * 0.4)
-        bottom_width = width
-        top_y = int(height * 0.4)
-        bottom_y = height
+        # 3. ZACHOWANIE TRAPEZOIDALNEGO ROI (Twoje parametry)
+        roi_mask = np.zeros_like(mask)
+        y_bottom = crop_h
+        y_mid = int(crop_h * 0.35)
+        y_top = 0
+        x_top_left = int(crop_w * 0.25)
+        x_top_right = int(crop_w * 0.75)
 
         vertices = np.array([[ 
-            ((width - top_width) // 2, top_y),
-            ((width + top_width) // 2, top_y),
-            (bottom_width, bottom_y),
-            (0, bottom_y)
+            (0, y_bottom), (crop_w, y_bottom), (crop_w, y_mid), 
+            (x_top_right, y_top), (x_top_left, y_top), (0, y_mid) 
         ]], dtype=np.int32)
 
+        # Wypełniamy trapez na biało
         cv.fillPoly(roi_mask, vertices, 255)
-        roi_edges = cv.bitwise_and(edges, roi_mask)
+        
+        # NAKŁADAMY ROI NA MASKĘ (Ucinamy boki) - to jest kluczowa poprawka!
+        roi = cv.bitwise_and(mask, roi_mask)
 
-        lines = cv.HoughLinesP(roi_edges, 1, np.pi/180, 15, minLineLength=7, maxLineGap=3)
+        # 4. PRZYGOTOWANIE MASKI DO FOXGLOVE (teraz będzie miała czarne rogi z ROI)
+        full_mask = np.zeros((height, width), dtype=np.uint8)
+        full_mask[crop_y:, :] = roi # Publikujemy to, co widzi system po nałożeniu ROI
+        mask_bgr = cv.cvtColor(full_mask, cv.COLOR_GRAY2BGR)
+        
+        # Rysujemy zielony obrys naszego ROI w podglądzie maski
+        vertices_shifted = vertices + np.array([0, crop_y])
+        cv.polylines(mask_bgr, [vertices_shifted], isClosed=True, color=(0, 255, 0), thickness=2)
+
+        # 5. ROZMYCIE I KRAWĘDZIE (Działają tylko na tym, co zostało z ROI)
+        blur = cv.GaussianBlur(roi, (5, 5), 0)
+        edges = cv.Canny(blur, 50, 150)
+
+        # Przygotowanie pełnowymiarowego podglądu krawędzi (ROI Edges) do Foxglove
+        full_edges = np.zeros((height, width), dtype=np.uint8)
+        full_edges[crop_y:, :] = edges
+        roi_bgr = cv.cvtColor(full_edges, cv.COLOR_GRAY2BGR)
+
+        # 6. HOUGH LINES
+        lines = cv.HoughLinesP(edges, 1, np.pi/180, 15, minLineLength=7, maxLineGap=3)
 
         left_lines = []
         right_lines = []
@@ -101,14 +130,19 @@ class ProcessFrame(Node):
         if lines is not None:
             for line in lines:
                 for x1, y1, x2, y2 in line:
-                    slope = (y2 - y1) / (x2 - x1 + 0.0001)
+                    # KOREKCJA WSPÓŁRZĘDNYCH
+                    real_y1 = y1 + crop_y
+                    real_y2 = y2 + crop_y
+                    
+                    slope = (real_y2 - real_y1) / (x2 - x1 + 0.0001)
                     if abs(slope) < 0.15: continue
+                    
                     if (x1 + x2) / 2 < width / 2: 
-                        left_lines.append((x1, y1, x2, y2))
+                        left_lines.append((x1, real_y1, x2, real_y2))
                     else: 
-                        right_lines.append((x1, y1, x2, y2))
+                        right_lines.append((x1, real_y1, x2, real_y2))
 
-        return left_lines, right_lines
+        return left_lines, right_lines, mask_bgr, roi_bgr
 
     def fit_and_filter(self, lines, history, missing_counter):
         if len(lines) == 0:
@@ -147,7 +181,10 @@ class ProcessFrame(Node):
 
     def draw_guideline(self, frame, left_poly, right_poly):
         height, width, _ = frame.shape
-        ploty = np.linspace(int(height * 0.4), height, num=20)
+        
+        # KRYTYCZNA ZMIANA: Zaczynamy rysować linie dopasowania kwadratowego
+        # od 55% obrazu, a nie od 40%. Inaczej wielomian "leci" w górę na szare tło.
+        ploty = np.linspace(int(height * 0.55), height, num=20)
         
         left_fitx = self.get_fitx(left_poly, ploty)
         right_fitx = self.get_fitx(right_poly, ploty)
