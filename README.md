@@ -17,20 +17,9 @@
 
 **Docker build**
 ```bash
+cd ~/PBL_Korea/Autonomous_Vehicle_PBL_Korea
+
 docker build -t pbl_korea_ros2 .
-
-xhost +local:root
-
-docker run -it --rm \
-  --net=host \
-  -e DISPLAY=$DISPLAY \
-  -v /tmp/.X11-unix:/tmp/.X11-unix:rw \
-  --device=/dev/dri:/dev/dri \
-  -e XDG_RUNTIME_DIR=/tmp \
-  -e WAYLAND_DISPLAY=$WAYLAND_DISPLAY \
-  -v ~/PBL_Korea/Autonomous_Vehicle_PBL_Korea:/workspace \
-  -w /workspace \
-  pbl_korea_ros2 bash
 ```
 
 ---
@@ -74,6 +63,10 @@ ros2 launch mentorpi_core robot_start.launch.py
 
 **Ubuntu => Terminal**
 
+```bash
+xhost +local:root
+```
+
 ```bash 
 cd ~/PBL_Korea/Autonomous_Vehicle_PBL_Korea
 
@@ -87,11 +80,9 @@ docker run -it --rm \
   -v ~/PBL_Korea/Autonomous_Vehicle_PBL_Korea:/workspace \
   -w /workspace \
   pbl_korea_ros2 bash
-
-
-```bash
-xhost +local:root
 ```
+
+
 
 ## ===== MAIN DETECTION =====
 
