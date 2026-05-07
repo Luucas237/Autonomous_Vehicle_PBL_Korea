@@ -75,6 +75,7 @@ docker run -it --rm \
   -e DISPLAY=$DISPLAY \
   -v /tmp/.X11-unix:/tmp/.X11-unix:rw \
   --device=/dev/dri:/dev/dri \
+  --device=/dev/video0:/dev/video0 \
   -e XDG_RUNTIME_DIR=/tmp \
   -e WAYLAND_DISPLAY=$WAYLAND_DISPLAY \
   -v ~/PBL_Korea/Autonomous_Vehicle_PBL_Korea:/workspace \
