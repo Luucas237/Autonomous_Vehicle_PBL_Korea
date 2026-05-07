@@ -105,7 +105,7 @@ class ObstacleAvoider(Node):
 
     def publish_rviz_marker(self, distance):
         marker = Marker()
-        marker.header.frame_id = "lidar_frame" # LUB 'base_link' - zależy od ramy Twojego lidara!
+        marker.header.frame_id = "lidar_frame"
         marker.header.stamp = self.get_clock().now().to_msg()
         marker.ns = "obstacle"
         marker.id = 0

@@ -3,7 +3,7 @@ import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Float32
 from geometry_msgs.msg import Twist
-import time  # <-- Ważny import do opóźnienia przy wyłączaniu
+import time
 
 class SimpleDriveController(Node):
     def __init__(self):
