@@ -18,7 +18,7 @@ class SimpleDriveController(Node):
         
         self.cmd_vel_pub = self.create_publisher(Twist, '/cmd_vel', 10)
         
-        self.base_speed = 0.20
+        self.base_speed = 0.12
         self.min_speed = 0.06
         self.kp = 0.008
         self.kd = 0.003
@@ -28,8 +28,15 @@ class SimpleDriveController(Node):
         twist = Twist()
         offset = msg.data 
 
-        if offset == 999.0:
+        if offset == 999.0: # Awaryjny stop
             twist.linear.x = 0.0
+            twist.angular.z = 0.0
+            self.cmd_vel_pub.publish(twist)
+            return
+
+        # NOWOŚĆ: Bieg wsteczny!
+        if offset == 888.0: 
+            twist.linear.x = -0.15 # Prędkość cofania
             twist.angular.z = 0.0
             self.cmd_vel_pub.publish(twist)
             return

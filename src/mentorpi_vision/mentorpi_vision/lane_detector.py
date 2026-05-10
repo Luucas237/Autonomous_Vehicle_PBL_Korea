@@ -22,7 +22,6 @@ class ProcessFrame(Node):
         self.missing_left = 0
         self.missing_right = 0
 
-        # Subskrypcja kamery z robota (Topic)
         self.frame_subscriber = self.create_subscription(
             Image, 
             '/ascamera/camera_publisher/rgb0/image',  
@@ -30,11 +29,10 @@ class ProcessFrame(Node):
             qos_profile_sensor_data     
         )
 
-        self.offset_value_publisher_ = self.create_publisher(Float32, 'offset_value', 10)
+        self.offset_value_publisher_ = self.create_publisher(Float32, '/vision/offset_raw', qos_profile_sensor_data)
         self.color_range_publisher = self.create_publisher(Int32MultiArray, '/mentorpi/vision/hsv_thresholds', 10)
         self.curve_publisher = self.create_publisher(Float32, '/mentorpi/vision/curve_threshold', 10)
 
-        # --- SYSTEM ZARZĄDZANIA ŹRÓDŁAMI WIDEO ---
         self.available_sources = ["Robot Topic"]
         self.current_source_idx = 0
         self.active_pc_cap = None
@@ -47,7 +45,6 @@ class ProcessFrame(Node):
                 cap.release()
         self.get_logger().info(f"Dostępne źródła wideo: {self.available_sources}")
 
-        # Zmienne przechowujące ostatnią klatkę z danego źródła
         self.latest_robot_frame = None
         self.last_robot_time = 0.0
         
@@ -56,6 +53,9 @@ class ProcessFrame(Node):
         self.current_offset = 0.0
         self.current_curve_threshold = 0.0005 
 
+        # --- NOWOŚĆ: STAN SILNIKÓW (Domyślnie OFF) ---
+        self.engines_on = False
+
         self.frame_w = 640 
         self.frame_h = 480
 
@@ -63,7 +63,6 @@ class ProcessFrame(Node):
         self.input_text = "0.0005"
         self.is_typing = False
         
-        # Konfiguracja GUI
         self.window_name = "MentorPi - Vision Control Center"
         cv.namedWindow(self.window_name)
         cv.setMouseCallback(self.window_name, self.mouse_callback)
@@ -75,12 +74,10 @@ class ProcessFrame(Node):
         cv.createTrackbar("V Min", self.window_name, 0, 255, self.nothing)
         cv.createTrackbar("V Max", self.window_name, 80, 255, self.nothing)
 
-        # Główny Timer - odświeżanie logiki i GUI (ok. 30 FPS)
         self.gui_timer = self.create_timer(0.033, self.main_update_loop)
         
-        # Inicjalizacja pierwszego źródła (jeśli to PC, otwieramy port)
         self.switch_source(force_init=True)
-        self.get_logger().info('Master GUI załadowane! System gotowy do pracy.')
+        self.get_logger().info('Master GUI załadowane! Silniki oczekują na sygnał ON.')
 
     def nothing(self, x): pass
 
@@ -126,13 +123,9 @@ class ProcessFrame(Node):
 
     def mouse_callback(self, event, x, y, flags, param):
         if event == cv.EVENT_LBUTTONDOWN:
-            # Kliknięcie w obraz (pobieranie koloru)
             if x < self.frame_w and y < self.frame_h:
-                # Tu uwaga: musi być dostępna jakaś aktualna klatka, żeby pobrać kolor
-                # Kod dla bezpieczeństwa pominięty w tej funkcji, obsłużone niżej
                 pass
             
-            # Kliknięcie w panel boczny
             elif x >= self.frame_w:
                 rx = x - self.frame_w 
                 ry = y
@@ -141,16 +134,29 @@ class ProcessFrame(Node):
                     self.is_typing = True
                 elif 160 <= rx <= 250 and 450 <= ry <= 490:
                     self.save_curve_threshold()
-                # NOWY PRZYCISK: Zmiana źródła
                 elif 10 <= rx <= 370 and 520 <= ry <= 560:
                     self.switch_source()
+                # --- NOWE PRZYCISKI SILNIKÓW ---
+                elif 10 <= rx <= 180 and 620 <= ry <= 660:
+                    self.engines_on = True
+                    self.get_logger().info("SILNIKI WŁĄCZONE (ON)")
+                elif 190 <= rx <= 370 and 620 <= ry <= 660:
+                    self.engines_on = False
+                    self.get_logger().info("SILNIKI WYŁĄCZONE (OFF)")
+                elif 10 <= rx <= 370 and 680 <= ry <= 720:
+                    self.engines_on = False
+                    self.get_logger().warn("PANIC CENTER! Natychmiastowe zatrzymanie.")
+                    msg = Float32()
+                    msg.data = 999.0
+                    for _ in range(3):
+                        self.offset_value_publisher_.publish(msg)
+                # -------------------------------
                 elif 380 - 130 <= rx <= 380 - 20 and 960 - 60 <= ry <= 960 - 20:
                     self.reset_defaults()
                 else:
                     self.is_typing = False
 
     def robot_listener_callback(self, msg):
-        # Asynchroniczne nasłuchiwanie topicu (działa w tle niezależnie)
         frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
         self.latest_robot_frame = cv.resize(frame, (self.frame_w, self.frame_h))
         self.last_robot_time = time.time()
@@ -160,7 +166,6 @@ class ProcessFrame(Node):
         self.fps = 1.0 / (current_time - self.last_fps_time + 0.0001)
         self.last_fps_time = current_time
 
-        # POBIERANIE KLATKI Z ZALEŻNOŚCI OD WYBRANEGO ŹRÓDŁA
         current_source_name = self.available_sources[self.current_source_idx]
         current_frame = None
         status_msg = "OK"
@@ -181,7 +186,6 @@ class ProcessFrame(Node):
             else:
                 status_msg = "PC CAMERA NOT OPEN"
 
-        # TWORZENIE WIDOKU LEWEGO
         rgb_view = np.zeros((self.frame_h, self.frame_w, 3), dtype=np.uint8)
         mask_view = np.zeros((self.frame_h, self.frame_w, 3), dtype=np.uint8)
         
@@ -195,14 +199,18 @@ class ProcessFrame(Node):
         lower_bound = np.array([min(h_min, h_max), min(s_min, s_max), min(v_min, v_max)], dtype="uint8")
         upper_bound = np.array([max(h_min, h_max), max(s_min, s_max), max(v_min, v_max)], dtype="uint8")
 
-        # Aktualizacja zmiennej dla kliknięcia pipety (jeśli mamy obraz)
         if current_frame is not None:
             self.frame_for_pipette = current_frame.copy()
 
-        # Przetwarzanie wizji
         if current_frame is None:
             cv.putText(rgb_view, status_msg, (50, int(self.frame_h/2)), cv.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 255), 3)
             self.current_offset = 0.0
+            
+            # Jak nie ma kamery, a silniki są włączone - zatrzymaj je z automatu!
+            if self.engines_on:
+                msg = Float32()
+                msg.data = 999.0
+                self.offset_value_publisher_.publish(msg)
         else:
             output_frame = current_frame.copy()
             left_lines, right_lines, mask_view = self.detect_lines_core(output_frame, lower_bound, upper_bound)
@@ -214,7 +222,6 @@ class ProcessFrame(Node):
 
         left_panel = np.vstack((rgb_view, mask_view))
 
-        # TWORZENIE PANELU KONTROLNEGO
         panel_w = 380
         panel_h = left_panel.shape[0]
         right_panel = np.zeros((panel_h, panel_w, 3), dtype=np.uint8)
@@ -232,7 +239,6 @@ class ProcessFrame(Node):
         cv.putText(right_panel, f"FPS: {self.fps:.1f}", (10, 320), cv.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
         cv.putText(right_panel, f"Offset: {self.current_offset:.1f} px", (10, 360), cv.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
         
-        # --- BLOK CURVE THRESHOLD ---
         cv.putText(right_panel, "CURVE THRESHOLD:", (10, 430), cv.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
         box_color = (100, 255, 100) if self.is_typing else (255, 255, 255)
         cv.rectangle(right_panel, (10, 450), (150, 490), (50, 50, 50), -1)
@@ -243,11 +249,30 @@ class ProcessFrame(Node):
         cv.rectangle(right_panel, (160, 450), (250, 490), (255, 255, 255), 2)
         cv.putText(right_panel, "SAVE", (182, 476), cv.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
 
-        # --- NOWY BLOK WYBORU ŹRÓDŁA WIDEO (CLICK TO CYCLE) ---
         cv.putText(right_panel, "VIDEO SOURCE (Click to change):", (10, 515), cv.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
-        cv.rectangle(right_panel, (10, 520), (370, 560), (70, 30, 90), -1) # Fioletowe tło przycisku
+        cv.rectangle(right_panel, (10, 520), (370, 560), (70, 30, 90), -1)
         cv.rectangle(right_panel, (10, 520), (370, 560), (200, 150, 255), 2)
         cv.putText(right_panel, current_source_name, (20, 545), cv.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+
+        # --- NOWY BLOK GUI: KONTROLA SILNIKÓW ---
+        cv.putText(right_panel, "MOTOR CONTROL:", (10, 600), cv.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
+        
+        # Przycisk ON
+        on_color = (0, 200, 0) if self.engines_on else (50, 50, 50)
+        cv.rectangle(right_panel, (10, 620), (180, 660), on_color, -1)
+        cv.rectangle(right_panel, (10, 620), (180, 660), (255, 255, 255), 2)
+        cv.putText(right_panel, "ON", (75, 645), cv.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        
+        # Przycisk OFF
+        off_color = (0, 0, 200) if not self.engines_on else (50, 50, 50)
+        cv.rectangle(right_panel, (190, 620), (370, 660), off_color, -1)
+        cv.rectangle(right_panel, (190, 620), (370, 660), (255, 255, 255), 2)
+        cv.putText(right_panel, "OFF", (255, 645), cv.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        
+        # Przycisk CENTER (Panic)
+        cv.rectangle(right_panel, (10, 680), (370, 720), (0, 100, 200), -1) 
+        cv.rectangle(right_panel, (10, 680), (370, 720), (255, 255, 255), 2)
+        cv.putText(right_panel, "CENTER & STOP", (100, 705), cv.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
 
         # Przycisk Reset
         btn_w, btn_h = 110, 40
@@ -260,19 +285,12 @@ class ProcessFrame(Node):
         final_ui = np.hstack((left_panel, right_panel))
         cv.imshow(self.window_name, final_ui)
         
-        # Obsługa klawiatury + Publikacja danych
         key = cv.waitKey(1) & 0xFF
         if key != 255 and self.is_typing:
             if key == 8 or key == 127: self.input_text = self.input_text[:-1]
             elif key == 13 or key == 10: self.save_curve_threshold()
             elif chr(key) in "0123456789.": self.input_text += chr(key)
-            
-        # Pobieranie koloru pipetą
-        if hasattr(self, 'frame_for_pipette') and cv.getWindowProperty(self.window_name, 0) >= 0:
-             # Sprawdzam flagę myszy wewnątrz callbacku (nie polecam tego bezpośrednio z klawiatury, mysz już działa na pipetę w mouse_callback, tutaj publikujemy)
-             pass
 
-        # Publikowanie parametrów (tylko w kierunku ROS 2)
         msg_color = Int32MultiArray()
         msg_color.data = [int(lower_bound[0]), int(lower_bound[1]), int(lower_bound[2]), 
                           int(upper_bound[0]), int(upper_bound[1]), int(upper_bound[2])]
@@ -397,11 +415,22 @@ class ProcessFrame(Node):
             offset = float(mid_x_lookahead - (width / 2.0))
             cv.circle(frame, (int(mid_x_lookahead), lookahead_y), 8, (0, 255, 255), -1)
             
+            # Wysłanie offsetu LUB natychmiastowego zatrzymania w zależności od trybu
             msg = Float32()
-            msg.data = offset
+            msg.data = offset if self.engines_on else 999.0
+            self.offset_value_publisher_.publish(msg)
+        else:
+            # Bezpiecznik: jeśli zgubimy linie w trakcie jazdy, wymuszamy STOP
+            msg = Float32()
+            msg.data = 999.0
             self.offset_value_publisher_.publish(msg)
 
         cv.putText(frame, "Hybrid Mode Active", (10, 30), cv.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        
+        # Wyświetlanie ostrzeżenia na ekranie głównym kamery
+        if not self.engines_on:
+            cv.putText(frame, "ENGINES OFF (STOPPED)", (10, 80), cv.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 255), 3)
+
         return frame, offset
 
     def destroy_node(self):

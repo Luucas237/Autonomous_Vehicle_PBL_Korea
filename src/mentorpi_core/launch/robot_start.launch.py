@@ -13,12 +13,12 @@ def generate_launch_description():
         name='vision_node'
     )
 
-    # # 2. Węzeł Silników (Regulator PID)
-    # core_node = Node(
-    #     package='mentorpi_core',
-    #     executable='simple_drive',
-    #     name='simple_drive_node'
-    # )
+    # 2. Węzeł Silników (Regulator PID)
+    core_node = Node(
+        package='mentorpi_core',
+        executable='simple_drive',
+        name='simple_drive_node'
+    )
 
     # 3. Węzeł Omijania Przeszkód (Maszyna Stanów)
     avoider_node = Node(
@@ -35,8 +35,8 @@ def generate_launch_description():
     # )
 
     return LaunchDescription([
-        vision_node,
-        # core_node,
+        # vision_node,
+        core_node,
         avoider_node
         # lidar_launch
     ])
