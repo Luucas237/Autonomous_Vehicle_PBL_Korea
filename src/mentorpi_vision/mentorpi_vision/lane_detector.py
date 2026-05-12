@@ -3,7 +3,8 @@ import rclpy
 from rclpy.node import Node
 from cv_bridge import CvBridge
 from sensor_msgs.msg import Image
-from std_msgs.msg import Float32, Int32MultiArray
+# DODANO: Float32MultiArray do odbioru telemetrii
+from std_msgs.msg import Float32, Int32MultiArray, Float32MultiArray
 from rclpy.qos import qos_profile_sensor_data  
 
 import cv2 as cv
@@ -29,6 +30,24 @@ class ProcessFrame(Node):
             qos_profile_sensor_data     
         )
 
+        # --- NOWOŚĆ: Nasłuchujemy telemetrii z robota ---
+        self.telemetry_subscriber = self.create_subscription(
+            Float32MultiArray,
+            '/vision/lane_telemetry',
+            self.telemetry_callback,
+            qos_profile_sensor_data
+        )
+        self.latest_telemetry = None
+
+        # --- DODAJ TO: Nasłuchujemy maski robota ---
+        self.mask_subscriber = self.create_subscription(
+            Image,
+            '/vision/robot_mask',
+            self.mask_callback,
+            qos_profile_sensor_data
+        )
+        self.latest_robot_mask = None
+
         self.offset_value_publisher_ = self.create_publisher(Float32, '/vision/offset_raw', qos_profile_sensor_data)
         self.color_range_publisher = self.create_publisher(Int32MultiArray, '/mentorpi/vision/hsv_thresholds', 10)
         self.curve_publisher = self.create_publisher(Float32, '/mentorpi/vision/curve_threshold', 10)
@@ -53,9 +72,7 @@ class ProcessFrame(Node):
         self.current_offset = 0.0
         self.current_curve_threshold = 0.0005 
 
-        # --- NOWOŚĆ: STAN SILNIKÓW (Domyślnie OFF) ---
         self.engines_on = False
-
         self.frame_w = 640 
         self.frame_h = 480
 
@@ -77,9 +94,18 @@ class ProcessFrame(Node):
         self.gui_timer = self.create_timer(0.033, self.main_update_loop)
         
         self.switch_source(force_init=True)
-        self.get_logger().info('Master GUI załadowane! Silniki oczekują na sygnał ON.')
+        self.get_logger().info('Master GUI załadowane! Hybrydowe rysowanie linii aktywne.')
 
     def nothing(self, x): pass
+
+    # Callback zapisujący paczkę z danymi linii od robota
+    def telemetry_callback(self, msg):
+        self.latest_telemetry = msg.data
+    def mask_callback(self, msg):
+        try:
+            self.latest_robot_mask = self.bridge.imgmsg_to_cv2(msg, desired_encoding='mono8')
+        except Exception:
+            pass
 
     def reset_defaults(self):
         cv.setTrackbarPos("H Min", self.window_name, 0)
@@ -125,7 +151,6 @@ class ProcessFrame(Node):
         if event == cv.EVENT_LBUTTONDOWN:
             if x < self.frame_w and y < self.frame_h:
                 pass
-            
             elif x >= self.frame_w:
                 rx = x - self.frame_w 
                 ry = y
@@ -136,7 +161,6 @@ class ProcessFrame(Node):
                     self.save_curve_threshold()
                 elif 10 <= rx <= 370 and 520 <= ry <= 560:
                     self.switch_source()
-                # --- NOWE PRZYCISKI SILNIKÓW ---
                 elif 10 <= rx <= 180 and 620 <= ry <= 660:
                     self.engines_on = True
                     self.get_logger().info("SILNIKI WŁĄCZONE (ON)")
@@ -150,7 +174,6 @@ class ProcessFrame(Node):
                     msg.data = 999.0
                     for _ in range(3):
                         self.offset_value_publisher_.publish(msg)
-                # -------------------------------
                 elif 380 - 130 <= rx <= 380 - 20 and 960 - 60 <= ry <= 960 - 20:
                     self.reset_defaults()
                 else:
@@ -199,26 +222,62 @@ class ProcessFrame(Node):
         lower_bound = np.array([min(h_min, h_max), min(s_min, s_max), min(v_min, v_max)], dtype="uint8")
         upper_bound = np.array([max(h_min, h_max), max(s_min, s_max), max(v_min, v_max)], dtype="uint8")
 
-        if current_frame is not None:
-            self.frame_for_pipette = current_frame.copy()
-
         if current_frame is None:
             cv.putText(rgb_view, status_msg, (50, int(self.frame_h/2)), cv.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 255), 3)
             self.current_offset = 0.0
             
-            # Jak nie ma kamery, a silniki są włączone - zatrzymaj je z automatu!
             if self.engines_on:
                 msg = Float32()
                 msg.data = 999.0
                 self.offset_value_publisher_.publish(msg)
         else:
             output_frame = current_frame.copy()
-            left_lines, right_lines, mask_view = self.detect_lines_core(output_frame, lower_bound, upper_bound)
-            
-            left_poly, self.missing_left = self.fit_and_filter(left_lines, self.left_history, self.missing_left)
-            right_poly, self.missing_right = self.fit_and_filter(right_lines, self.right_history, self.missing_right)
 
-            rgb_view, self.current_offset = self.draw_guideline(output_frame, left_poly, right_poly)
+            # --- HYBRYDOWY SYSTEM RYSOWANIA (Przełącznik) ---
+            if current_source_name == "Robot Topic":
+                left_poly, right_poly = None, None
+                tel_offset = 0.0
+                bumper_active = False
+                
+                # 1. Pobieranie matematyki z robota
+                if self.latest_telemetry is not None and len(self.latest_telemetry) >= 10:
+                    if self.latest_telemetry[0] == 1.0:
+                        left_poly = np.array([self.latest_telemetry[1], self.latest_telemetry[2], self.latest_telemetry[3]])
+                    if self.latest_telemetry[4] == 1.0:
+                        right_poly = np.array([self.latest_telemetry[5], self.latest_telemetry[6], self.latest_telemetry[7]])
+                    tel_offset = self.latest_telemetry[8]
+                    bumper_active = (self.latest_telemetry[9] == 1.0)
+
+                # 2. WYŚWIETLANIE ORYGINALNEJ MASKI ROBOTA
+                if self.latest_robot_mask is not None:
+                    # Maska z robota jest ucięta o 45%. Tworzymy pustą, pełną klatkę i wklejamy maskę na dół.
+                    full_mask = np.zeros((self.frame_h, self.frame_w), dtype=np.uint8)
+                    crop_y = int(self.frame_h * 0.45)
+                    h, w = self.latest_robot_mask.shape
+                    
+                    # Zabezpieczenie przed błędem wymiarów
+                    if crop_y + h <= self.frame_h and w <= self.frame_w:
+                        full_mask[crop_y:crop_y+h, 0:w] = self.latest_robot_mask
+                    
+                    mask_view = cv.cvtColor(full_mask, cv.COLOR_GRAY2BGR)
+                else:
+                    mask_view = np.zeros((self.frame_h, self.frame_w, 3), dtype=np.uint8)
+
+                cv.putText(mask_view, "ROBOT NATIVE MASK (Debug Mode)", (10, 30), cv.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                
+                # 3. Rysowanie linii na podstawie telemetrii z robota
+                rgb_view, self.current_offset = self.draw_guideline(output_frame, left_poly, right_poly, override_offset=tel_offset)
+                
+                if bumper_active:
+                    cv.putText(rgb_view, "BUMPER ACTIVE!", (10, 120), cv.FONT_HERSHEY_SIMPLEX, 1.2, (0, 165, 255), 3)
+
+            else:
+                # Tryb PC Camera -> Liczymy lokalnie
+                left_lines, right_lines, mask_view = self.detect_lines_core(output_frame, lower_bound, upper_bound)
+                left_poly, self.missing_left = self.fit_and_filter(left_lines, self.left_history, self.missing_left)
+                right_poly, self.missing_right = self.fit_and_filter(right_lines, self.right_history, self.missing_right)
+
+                rgb_view, self.current_offset = self.draw_guideline(output_frame, left_poly, right_poly)
 
         left_panel = np.vstack((rgb_view, mask_view))
 
@@ -254,27 +313,22 @@ class ProcessFrame(Node):
         cv.rectangle(right_panel, (10, 520), (370, 560), (200, 150, 255), 2)
         cv.putText(right_panel, current_source_name, (20, 545), cv.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
 
-        # --- NOWY BLOK GUI: KONTROLA SILNIKÓW ---
         cv.putText(right_panel, "MOTOR CONTROL:", (10, 600), cv.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
         
-        # Przycisk ON
         on_color = (0, 200, 0) if self.engines_on else (50, 50, 50)
         cv.rectangle(right_panel, (10, 620), (180, 660), on_color, -1)
         cv.rectangle(right_panel, (10, 620), (180, 660), (255, 255, 255), 2)
         cv.putText(right_panel, "ON", (75, 645), cv.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
         
-        # Przycisk OFF
         off_color = (0, 0, 200) if not self.engines_on else (50, 50, 50)
         cv.rectangle(right_panel, (190, 620), (370, 660), off_color, -1)
         cv.rectangle(right_panel, (190, 620), (370, 660), (255, 255, 255), 2)
         cv.putText(right_panel, "OFF", (255, 645), cv.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
         
-        # Przycisk CENTER (Panic)
         cv.rectangle(right_panel, (10, 680), (370, 720), (0, 100, 200), -1) 
         cv.rectangle(right_panel, (10, 680), (370, 720), (255, 255, 255), 2)
         cv.putText(right_panel, "CENTER & STOP", (100, 705), cv.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
 
-        # Przycisk Reset
         btn_w, btn_h = 110, 40
         btn_x1, btn_y1 = panel_w - btn_w - 20, panel_h - btn_h - 20
         btn_x2, btn_y2 = panel_w - 20, panel_h - 20
@@ -388,46 +442,52 @@ class ProcessFrame(Node):
             return smoothed_poly, missing_counter
         else: return np.mean(history, axis=0), missing_counter
 
-    def draw_guideline(self, frame, left_poly, right_poly):
+    # --- ULEPSZONA FUNKCJA RYSOWANIA (Obsługa trybu Telemetry i lokalnego) ---
+    def draw_guideline(self, frame, left_poly, right_poly, override_offset=None):
         height, width, _ = frame.shape
         lookahead_y = int(height * 0.70)
         offset = 0.0
 
-        ploty = np.linspace(int(height * 0.4), height, num=30)
-
-        if left_poly is not None and right_poly is not None:
+        ploty = np.linspace(int(height * 0.55), height, num=30)
+        
+        # Rysowanie Linii Lewej (niezależnie czy jest prawa)
+        if left_poly is not None:
             left_fitx = left_poly[0]*ploty**2 + left_poly[1]*ploty + left_poly[2]
-            right_fitx = right_poly[0]*ploty**2 + right_poly[1]*ploty + right_poly[2]
-            mid_fitx = (left_fitx + right_fitx) / 2.0
-
             pts_left = np.array([np.transpose(np.vstack([left_fitx, ploty]))], np.int32)
-            pts_right = np.array([np.transpose(np.vstack([right_fitx, ploty]))], np.int32)
-            pts_mid = np.array([np.transpose(np.vstack([mid_fitx, ploty]))], np.int32)
-
             cv.polylines(frame, [pts_left], isClosed=False, color=(255, 0, 0), thickness=4)
+
+        # Rysowanie Linii Prawej
+        if right_poly is not None:
+            right_fitx = right_poly[0]*ploty**2 + right_poly[1]*ploty + right_poly[2]
+            pts_right = np.array([np.transpose(np.vstack([right_fitx, ploty]))], np.int32)
             cv.polylines(frame, [pts_right], isClosed=False, color=(255, 0, 0), thickness=4)
+
+        # Rysowanie środka (tylko jak są obie)
+        if left_poly is not None and right_poly is not None:
+            mid_fitx = (left_fitx + right_fitx) / 2.0
+            pts_mid = np.array([np.transpose(np.vstack([mid_fitx, ploty]))], np.int32)
             cv.polylines(frame, [pts_mid], isClosed=False, color=(0, 0, 255), thickness=3)
 
+        # Punkt odniesienia offsetu - Priorytet Telemetrii
+        if override_offset is not None:
+            offset = override_offset
+            mid_x_lookahead = offset + (width / 2.0)
+            cv.circle(frame, (int(mid_x_lookahead), lookahead_y), 10, (0, 255, 255), -1)
+            
+        elif left_poly is not None and right_poly is not None:
             left_x_lookahead = left_poly[0]*(lookahead_y**2) + left_poly[1]*lookahead_y + left_poly[2]
             right_x_lookahead = right_poly[0]*(lookahead_y**2) + right_poly[1]*lookahead_y + right_poly[2]
             mid_x_lookahead = (left_x_lookahead + right_x_lookahead) / 2.0
-            
             offset = float(mid_x_lookahead - (width / 2.0))
             cv.circle(frame, (int(mid_x_lookahead), lookahead_y), 8, (0, 255, 255), -1)
             
-            # Wysłanie offsetu LUB natychmiastowego zatrzymania w zależności od trybu
-            msg = Float32()
-            msg.data = offset if self.engines_on else 999.0
-            self.offset_value_publisher_.publish(msg)
-        else:
-            # Bezpiecznik: jeśli zgubimy linie w trakcie jazdy, wymuszamy STOP
-            msg = Float32()
-            msg.data = 999.0
-            self.offset_value_publisher_.publish(msg)
+        # Zawsze publikujemy 999.0 w przypadku wymuszenia STOP z GUI
+        msg = Float32()
+        msg.data = offset if self.engines_on else 999.0
+        self.offset_value_publisher_.publish(msg)
 
         cv.putText(frame, "Hybrid Mode Active", (10, 30), cv.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
         
-        # Wyświetlanie ostrzeżenia na ekranie głównym kamery
         if not self.engines_on:
             cv.putText(frame, "ENGINES OFF (STOPPED)", (10, 80), cv.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 255), 3)
 

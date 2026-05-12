@@ -35,7 +35,7 @@ def generate_launch_description():
     # )
 
     return LaunchDescription([
-        # vision_node,
+        vision_node,
         core_node,
         avoider_node
         # lidar_launch
