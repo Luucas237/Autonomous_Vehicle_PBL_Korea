@@ -214,12 +214,10 @@ class ProcessFrame(Node):
         self.missing_left = 0
         self.missing_right = 0
 
-        # Otwieramy kamerę z PC (indeks 0, jak omówiliśmy w Dockerze)
         self.cap = cv.VideoCapture(0)
         if not self.cap.isOpened():
             self.get_logger().error("Nie można otworzyć kamery!")
 
-        # Publikacja Offsetu i parametrów
         self.offset_value_publisher_ = self.create_publisher(Float32, 'offset_value', 10)
         self.color_range_publisher = self.create_publisher(Int32MultiArray, '/mentorpi/vision/hsv_thresholds', 10)
         self.curve_publisher = self.create_publisher(Float32, '/mentorpi/vision/curve_threshold', 10)
@@ -232,7 +230,6 @@ class ProcessFrame(Node):
         
         self.current_curve_threshold = 0.0005 
 
-        # Ustalamy stały rozmiar klatki, żeby GUI nie "skakało" przy innej rozdzielczości kamery laptopa
         self.frame_w = 640 
         self.frame_h = 480
 
@@ -240,12 +237,10 @@ class ProcessFrame(Node):
         self.input_text = "0.0005"
         self.is_typing = False
         
-        # Konfiguracja GUI (Suwaki i okna)
         self.window_name = "MentorPi - PC Vision Control Center"
         cv.namedWindow(self.window_name)
         cv.setMouseCallback(self.window_name, self.mouse_callback)
         
-        # Domyślne wartości
         cv.createTrackbar("H Min", self.window_name, 0, 180, self.nothing)
         cv.createTrackbar("H Max", self.window_name, 180, 180, self.nothing)
         cv.createTrackbar("S Min", self.window_name, 0, 255, self.nothing)
@@ -253,7 +248,6 @@ class ProcessFrame(Node):
         cv.createTrackbar("V Min", self.window_name, 0, 255, self.nothing)
         cv.createTrackbar("V Max", self.window_name, 80, 255, self.nothing)
 
-        # Główna pętla programu na Timerze (ok 30 FPS)
         self.timer = self.create_timer(0.033, self.timer_callback)
         self.get_logger().info('Kamera PC z GUI załadowana! Odpalam strumień...')
 
@@ -312,7 +306,6 @@ class ProcessFrame(Node):
         ret, frame = self.cap.read()
         if not ret: return
 
-        # Wymuszamy rozmiar 640x480 dla prawidłowego działania panelu GUI
         frame = cv.resize(frame, (self.frame_w, self.frame_h))
 
         current_time = time.time()
