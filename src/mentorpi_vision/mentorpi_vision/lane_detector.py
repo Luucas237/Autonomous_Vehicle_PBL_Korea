@@ -3,7 +3,6 @@ import rclpy
 from rclpy.node import Node
 from cv_bridge import CvBridge
 from sensor_msgs.msg import Image
-# DODANO: Float32MultiArray do odbioru telemetrii
 from std_msgs.msg import Float32, Int32MultiArray, Float32MultiArray
 from rclpy.qos import qos_profile_sensor_data  
 
@@ -30,7 +29,7 @@ class ProcessFrame(Node):
             qos_profile_sensor_data     
         )
 
-        # --- NOWOŚĆ: Nasłuchujemy telemetrii z robota ---
+        
         self.telemetry_subscriber = self.create_subscription(
             Float32MultiArray,
             '/vision/lane_telemetry',
@@ -39,7 +38,7 @@ class ProcessFrame(Node):
         )
         self.latest_telemetry = None
 
-        # --- DODAJ TO: Nasłuchujemy maski robota ---
+        
         self.mask_subscriber = self.create_subscription(
             Image,
             '/vision/robot_mask',
@@ -80,7 +79,7 @@ class ProcessFrame(Node):
         self.input_text = "0.0005"
         self.is_typing = False
         
-        self.window_name = "MentorPi - Vision Control Center"
+        self.window_name = "Vision Control Center"
         cv.namedWindow(self.window_name)
         cv.setMouseCallback(self.window_name, self.mouse_callback)
         
@@ -94,11 +93,11 @@ class ProcessFrame(Node):
         self.gui_timer = self.create_timer(0.033, self.main_update_loop)
         
         self.switch_source(force_init=True)
-        self.get_logger().info('Master GUI załadowane! Hybrydowe rysowanie linii aktywne.')
+        self.get_logger().info('Master GUI loaded')
 
     def nothing(self, x): pass
 
-    # Callback zapisujący paczkę z danymi linii od robota
+    
     def telemetry_callback(self, msg):
         self.latest_telemetry = msg.data
     def mask_callback(self, msg):
@@ -250,12 +249,10 @@ class ProcessFrame(Node):
 
                 # 2. WYŚWIETLANIE ORYGINALNEJ MASKI ROBOTA
                 if self.latest_robot_mask is not None:
-                    # Maska z robota jest ucięta o 45%. Tworzymy pustą, pełną klatkę i wklejamy maskę na dół.
                     full_mask = np.zeros((self.frame_h, self.frame_w), dtype=np.uint8)
                     crop_y = int(self.frame_h * 0.45)
                     h, w = self.latest_robot_mask.shape
                     
-                    # Zabezpieczenie przed błędem wymiarów
                     if crop_y + h <= self.frame_h and w <= self.frame_w:
                         full_mask[crop_y:crop_y+h, 0:w] = self.latest_robot_mask
                     
@@ -272,7 +269,6 @@ class ProcessFrame(Node):
                     cv.putText(rgb_view, "BUMPER ACTIVE!", (10, 120), cv.FONT_HERSHEY_SIMPLEX, 1.2, (0, 165, 255), 3)
 
             else:
-                # Tryb PC Camera -> Liczymy lokalnie
                 left_lines, right_lines, mask_view = self.detect_lines_core(output_frame, lower_bound, upper_bound)
                 left_poly, self.missing_left = self.fit_and_filter(left_lines, self.left_history, self.missing_left)
                 right_poly, self.missing_right = self.fit_and_filter(right_lines, self.right_history, self.missing_right)
@@ -442,7 +438,6 @@ class ProcessFrame(Node):
             return smoothed_poly, missing_counter
         else: return np.mean(history, axis=0), missing_counter
 
-    # --- ULEPSZONA FUNKCJA RYSOWANIA (Obsługa trybu Telemetry i lokalnego) ---
     def draw_guideline(self, frame, left_poly, right_poly, override_offset=None):
         height, width, _ = frame.shape
         lookahead_y = int(height * 0.70)
@@ -450,25 +445,21 @@ class ProcessFrame(Node):
 
         ploty = np.linspace(int(height * 0.55), height, num=30)
         
-        # Rysowanie Linii Lewej (niezależnie czy jest prawa)
         if left_poly is not None:
             left_fitx = left_poly[0]*ploty**2 + left_poly[1]*ploty + left_poly[2]
             pts_left = np.array([np.transpose(np.vstack([left_fitx, ploty]))], np.int32)
             cv.polylines(frame, [pts_left], isClosed=False, color=(255, 0, 0), thickness=4)
 
-        # Rysowanie Linii Prawej
         if right_poly is not None:
             right_fitx = right_poly[0]*ploty**2 + right_poly[1]*ploty + right_poly[2]
             pts_right = np.array([np.transpose(np.vstack([right_fitx, ploty]))], np.int32)
             cv.polylines(frame, [pts_right], isClosed=False, color=(255, 0, 0), thickness=4)
 
-        # Rysowanie środka (tylko jak są obie)
         if left_poly is not None and right_poly is not None:
             mid_fitx = (left_fitx + right_fitx) / 2.0
             pts_mid = np.array([np.transpose(np.vstack([mid_fitx, ploty]))], np.int32)
             cv.polylines(frame, [pts_mid], isClosed=False, color=(0, 0, 255), thickness=3)
 
-        # Punkt odniesienia offsetu - Priorytet Telemetrii
         if override_offset is not None:
             offset = override_offset
             mid_x_lookahead = offset + (width / 2.0)
@@ -481,7 +472,6 @@ class ProcessFrame(Node):
             offset = float(mid_x_lookahead - (width / 2.0))
             cv.circle(frame, (int(mid_x_lookahead), lookahead_y), 8, (0, 255, 255), -1)
             
-        # Zawsze publikujemy 999.0 w przypadku wymuszenia STOP z GUI
         msg = Float32()
         msg.data = offset if self.engines_on else 999.0
         self.offset_value_publisher_.publish(msg)
