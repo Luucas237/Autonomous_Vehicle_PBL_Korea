@@ -15,7 +15,6 @@ def generate_launch_description():
         value=os.path.join(pkg_share, '..')
     )
 
-    # Konwersja XACRO -> URDF w Pythonie
     xacro_file = os.path.join(pkg_share, 'urdf', 'ack.urdf.xacro')
     robot_description_config = xacro.process_file(xacro_file)
     robot_urdf = robot_description_config.toxml()
@@ -26,7 +25,6 @@ def generate_launch_description():
         parameters=[{'robot_description': robot_urdf}]
     )
 
-    # Uruchomienie Gazebo (flaga -r od razu startuje symulację)
     world_file = os.path.join(pkg_share, 'worlds', 'test_track.sdf')
     gazebo_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -35,7 +33,6 @@ def generate_launch_description():
         launch_arguments={'gz_args': f'-r {world_file}'}.items()
     )
 
-    # Zespawnowanie robota w Gazebo
     spawn_robot = Node(
         package='ros_gz_sim',
         executable='create',
@@ -48,21 +45,18 @@ def generate_launch_description():
         output='screen'
     )
 
-    # MOST (BRIDGE) - Przesyłanie obrazu z Gazebo i sterowania do Gazebo
     bridge = Node(
         package='ros_gz_bridge',
         executable='parameter_bridge',
         arguments=[
-            # Znak '[' wymusza kierunek Gazebo -> ROS 2 (Zmniejsza lagi!)
+
             '/camera/image_raw@sensor_msgs/msg/Image[ignition.msgs.Image',
-            
-            # Znak ']' wymusza kierunek ROS 2 -> Gazebo (Komendy jazdy)
+
             '/cmd_vel@geometry_msgs/msg/Twist]ignition.msgs.Twist'
         ],
         output='screen'
     )
 
-    # FOXGLOVE BRIDGE - Dodany z Twojej magisterki
     foxglove = Node(
         package='foxglove_bridge',
         executable='foxglove_bridge',
@@ -70,10 +64,9 @@ def generate_launch_description():
         output='screen'
     )
 
-    # Węzeł śledzenia pasa (Twój nowy kod z ROI)
     lane_detector_node = Node(
-        package='mentorpi_vision', # ZMIEŃ na nazwę paczki, w której trzymasz ten skrypt
-        executable='lane_detector_sim', # ZMIEŃ na nazwę Twojego skryptu
+        package='mentorpi_vision', 
+        executable='lane_detector_sim', 
         name='sim_lane_tracker',
         output='screen'
     )
@@ -84,7 +77,7 @@ def generate_launch_description():
         robot_state_publisher,
         bridge,
         foxglove,
-        lane_detector_node, # <--- DODANO TUTAJ
+        lane_detector_node,
         TimerAction(
             period=3.0,
             actions=[spawn_robot]
