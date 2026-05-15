@@ -4,7 +4,7 @@ from launch import LaunchDescription
 from launch_ros.actions import Node
 
 def generate_launch_description():
-    
+     
     vision_pc_node = Node(
         package='mentorpi_vision',
         executable='lane_detector',
