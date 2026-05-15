@@ -38,8 +38,7 @@ class ProcessFrame(Node):
             Int32MultiArray, '/mentorpi/vision/hsv_thresholds', self.color_callback, 10)
         self.curve_subscriber = self.create_subscription(
             Float32, '/mentorpi/vision/curve_threshold', self.curve_callback, 10)
-
-        # UWAGA: Usunięto publikację do silników! Kamera wysyła tylko telemetrię i maskę.
+        
         self.telemetry_publisher = self.create_publisher(Float32MultiArray, '/vision/lane_telemetry', 10)
         self.mask_publisher = self.create_publisher(Image, '/vision/robot_mask', qos_profile_sensor_data)
 
@@ -179,7 +178,6 @@ class ProcessFrame(Node):
             if left_poly is not None: target_offset = float((left_x_look + (LANE_WIDTH_PX / 2.0)) - center_x)
             elif right_poly is not None: target_offset = float((right_x_look - (LANE_WIDTH_PX / 2.0)) - center_x)
 
-        # WIRTUALNY ZDERZAK (Tylko modyfikuje offset, nie wysyła go sam)
         crop_h, crop_w = roi_mask.shape
         bumper_h, bumper_w = 70, 180   
 
@@ -216,7 +214,6 @@ class ProcessFrame(Node):
 
         self.last_offset = target_offset
 
-        # --- TELEMETRIA DLA SZEFA (LiDARa) ---
         telemetry_array = [0.0] * 10
         if left_poly is not None:
             telemetry_array[0] = 1.0
@@ -225,7 +222,7 @@ class ProcessFrame(Node):
             telemetry_array[4] = 1.0
             telemetry_array[5], telemetry_array[6], telemetry_array[7] = right_poly[0], right_poly[1], right_poly[2]
             
-        telemetry_array[8] = float(target_offset) # Kamera prosi o taki skręt
+        telemetry_array[8] = float(target_offset) 
         telemetry_array[9] = 1.0 if bumper_active_flag else 0.0
         
         tel_msg = Float32MultiArray()
