@@ -5,7 +5,6 @@ from launch_ros.actions import Node
 
 def generate_launch_description():
     
-    # 1. Węzeł Podglądu Wizji na PC
     vision_pc_node = Node(
         package='mentorpi_vision',
         executable='lane_detector',
@@ -18,7 +17,6 @@ def generate_launch_description():
         name='map_pc_node'
     )
 
-    # 2. RViz z zapisaną konfiguracją
     rviz_config_dir = os.path.join(
         get_package_share_directory('mentorpi_navigation'),
         'rviz',
