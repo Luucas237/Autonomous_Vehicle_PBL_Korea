@@ -3,7 +3,7 @@ import os
 from glob import glob
 
 package_name = 'mentorpi_core'
-
+ 
 setup(
     name=package_name,
     version='0.0.0',
