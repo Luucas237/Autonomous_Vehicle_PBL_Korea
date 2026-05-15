@@ -32,7 +32,6 @@ class ProcessFrame(Node):
 
         self.offset_value_publisher_ = self.create_publisher(Float32, 'offset_value', 10)
         
-        # === NOWE PUBLISHERY DO FOXGLOVE ===
         self.annotated_image_publisher = self.create_publisher(Image, '/camera/image_annotated', 10)
         self.mask_publisher = self.create_publisher(Image, '/camera/image_mask', 10)
         self.roi_publisher = self.create_publisher(Image, '/camera/image_roi', 10)
@@ -53,7 +52,6 @@ class ProcessFrame(Node):
             self.get_logger().error(f"Błąd konwersji obrazu: {e}")
 
     def perform_detection(self, frame):
-        # Pobieramy teraz 3 obrazy z funkcji detekcji
         left_lines, right_lines, mask_bgr, roi_bgr = self.detect_white_lines(frame)
 
         left_poly, self.missing_left = self.fit_and_filter(left_lines, self.left_history, self.missing_left)
@@ -62,7 +60,6 @@ class ProcessFrame(Node):
         output = frame.copy()
         output, status = self.draw_guideline(output, left_poly, right_poly)
         
-        # Publikacja wszystkich 3 strumieni wideo do Foxglove
         try:
             self.annotated_image_publisher.publish(self.bridge.cv2_to_imgmsg(output, encoding="bgr8"))
             self.mask_publisher.publish(self.bridge.cv2_to_imgmsg(mask_bgr, encoding="bgr8"))
@@ -73,18 +70,15 @@ class ProcessFrame(Node):
     def detect_white_lines(self, frame):
         height, width = frame.shape[:2]
         
-        # 1. TWARDY CROP (Obniżenie do 55%)
         crop_y = int(height * 0.65) 
         cropped_frame = frame[crop_y:, :]
         crop_h, crop_w = cropped_frame.shape[:2]
 
-        # 2. MASKA HSV NA CROP
         hsv = cv.cvtColor(cropped_frame, cv.COLOR_BGR2HSV)
         lower_white = np.array([0, 0, 180], dtype="uint8")
         upper_white = np.array([180, 30, 255], dtype="uint8")
         mask = cv.inRange(hsv, lower_white, upper_white)
 
-        # 3. ZACHOWANIE TRAPEZOIDALNEGO ROI (Twoje parametry)
         roi_mask = np.zeros_like(mask)
         y_bottom = crop_h
         y_mid = int(crop_h * 0.35)
@@ -97,31 +91,24 @@ class ProcessFrame(Node):
             (x_top_right, y_top), (x_top_left, y_top), (0, y_mid) 
         ]], dtype=np.int32)
 
-        # Wypełniamy trapez na biało
         cv.fillPoly(roi_mask, vertices, 255)
-        
-        # NAKŁADAMY ROI NA MASKĘ (Ucinamy boki) - to jest kluczowa poprawka!
+
         roi = cv.bitwise_and(mask, roi_mask)
 
-        # 4. PRZYGOTOWANIE MASKI DO FOXGLOVE (teraz będzie miała czarne rogi z ROI)
         full_mask = np.zeros((height, width), dtype=np.uint8)
-        full_mask[crop_y:, :] = roi # Publikujemy to, co widzi system po nałożeniu ROI
+        full_mask[crop_y:, :] = roi 
         mask_bgr = cv.cvtColor(full_mask, cv.COLOR_GRAY2BGR)
-        
-        # Rysujemy zielony obrys naszego ROI w podglądzie maski
+
         vertices_shifted = vertices + np.array([0, crop_y])
         cv.polylines(mask_bgr, [vertices_shifted], isClosed=True, color=(0, 255, 0), thickness=2)
 
-        # 5. ROZMYCIE I KRAWĘDZIE (Działają tylko na tym, co zostało z ROI)
         blur = cv.GaussianBlur(roi, (5, 5), 0)
         edges = cv.Canny(blur, 50, 150)
 
-        # Przygotowanie pełnowymiarowego podglądu krawędzi (ROI Edges) do Foxglove
         full_edges = np.zeros((height, width), dtype=np.uint8)
         full_edges[crop_y:, :] = edges
         roi_bgr = cv.cvtColor(full_edges, cv.COLOR_GRAY2BGR)
 
-        # 6. HOUGH LINES
         lines = cv.HoughLinesP(edges, 1, np.pi/180, 15, minLineLength=7, maxLineGap=3)
 
         left_lines = []
@@ -130,7 +117,6 @@ class ProcessFrame(Node):
         if lines is not None:
             for line in lines:
                 for x1, y1, x2, y2 in line:
-                    # KOREKCJA WSPÓŁRZĘDNYCH
                     real_y1 = y1 + crop_y
                     real_y2 = y2 + crop_y
                     
@@ -182,8 +168,6 @@ class ProcessFrame(Node):
     def draw_guideline(self, frame, left_poly, right_poly):
         height, width, _ = frame.shape
         
-        # KRYTYCZNA ZMIANA: Zaczynamy rysować linie dopasowania kwadratowego
-        # od 55% obrazu, a nie od 40%. Inaczej wielomian "leci" w górę na szare tło.
         ploty = np.linspace(int(height * 0.55), height, num=20)
         
         left_fitx = self.get_fitx(left_poly, ploty)
