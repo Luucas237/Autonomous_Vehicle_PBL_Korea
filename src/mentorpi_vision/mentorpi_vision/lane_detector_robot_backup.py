@@ -25,9 +25,8 @@ class ProcessFrame(Node):
         self.missing_right = 0
         self.last_offset = 0.0
 
-        # --- FILTR DOLNOPRZEPUSOTWY (PŁYNNOŚĆ KIEROWNICY) ---
-        self.current_steer = 0.0  # Faktyczna, aktualna wartość skrętu
-        self.steering_alpha = 0.25 # Zwinność (1.0 = brak płynności, 0.1 = bardzo leniwy)
+        self.current_steer = 0.0 
+        self.steering_alpha = 0.25
 
         self.lower_color = np.array([0, 0, 0], dtype="uint8")
         self.upper_color = np.array([180, 255, 80], dtype="uint8")
@@ -36,11 +35,10 @@ class ProcessFrame(Node):
         self.engines_on = False
         self.last_engine_state = False
 
-        # --- MASZYNA STANÓW BUMPERA ---
         self.bumper_state = 'INACTIVE' 
         self.bumper_start_time = 0.0
         self.bumper_dir = 0.0          
-        self.pixel_threshold = 1200 # Próg wykrycia koca/linii
+        self.pixel_threshold = 1200 
 
         self.frame_subscriber = self.create_subscription(
             Image, 
@@ -82,7 +80,6 @@ class ProcessFrame(Node):
     def gui_cmd_callback(self, msg):
         if msg.data == 999.0:
             self.engines_on = False
-            # Wymuszenie wyśrodkowania wirtualnej kierownicy podczas postoju
             self.current_steer = 0.0 
         else:
             self.engines_on = True
@@ -245,9 +242,7 @@ class ProcessFrame(Node):
 
         LANE_WIDTH_PX = 380.0 
 
-        # ==========================================
-        # 1. WARSTWA NAWIGACJI (MATEMATYKA)
-        # ==========================================
+
         left_x_look, right_x_look = None, None
 
         if left_poly is not None:
@@ -270,9 +265,6 @@ class ProcessFrame(Node):
                 mid_x = right_x_look - (LANE_WIDTH_PX / 2.0)
                 target_offset = float(mid_x - center_x)
 
-        # ==========================================
-        # 2. WARSTWA PRZETRWANIA (DYNAMICZNY ZDERZAK)
-        # ==========================================
         crop_h, crop_w = roi_mask.shape
         bumper_h = 70    
         bumper_w = 180   
@@ -285,12 +277,11 @@ class ProcessFrame(Node):
         
         bumper_active_flag = False
 
-        # --- Funkcja wyliczająca siłę od 100 do 300 ---
         def calculate_dynamic_force(pixels):
             base_force = 100.0
             max_force = 300.0
             excess = pixels - self.pixel_threshold
-            # Zderzak osiąga pełną moc 300 przy 4200 pikselach, a zaczyna od 100.
+      
             scale = min(1.0, max(0.0, excess / 3000.0)) 
             return base_force + (max_force - base_force) * scale
 
@@ -320,17 +311,13 @@ class ProcessFrame(Node):
             bumper_active_flag = True
             align_time = current_time - self.bumper_start_time
             if align_time < 0.4: 
-                # Bardzo delikatna kontra na wyprostowanie (tylko 30% siły ucieczki)
+
                 target_offset = -self.bumper_dir * 0.30 
             else:
                 self.bumper_state = 'INACTIVE'
 
         self.last_offset = target_offset
 
-        # ==========================================
-        # 3. FILTR DOLNOPRZEPUSTOWY (PŁYNNOŚĆ)
-        # ==========================================
-        # Stopniowe dążenie aktualnego skrętu do wyliczonego celu
         self.current_steer = self.current_steer + self.steering_alpha * (target_offset - self.current_steer)
 
         if self.engines_on:
@@ -338,7 +325,6 @@ class ProcessFrame(Node):
             msg.data = float(self.current_steer)
             self.offset_value_publisher_.publish(msg)
 
-        # --- TELEMETRIA DO GUI ---
         telemetry_array = [0.0] * 10
         if left_poly is not None:
             telemetry_array[0] = 1.0
@@ -347,7 +333,6 @@ class ProcessFrame(Node):
             telemetry_array[4] = 1.0
             telemetry_array[5], telemetry_array[6], telemetry_array[7] = right_poly[0], right_poly[1], right_poly[2]
             
-        # Wysyłamy do GUI nałożony filtr, aby zielona kropka poruszała się równie gładko co koła robota
         telemetry_array[8] = float(self.current_steer)
         telemetry_array[9] = 1.0 if bumper_active_flag else 0.0
         
