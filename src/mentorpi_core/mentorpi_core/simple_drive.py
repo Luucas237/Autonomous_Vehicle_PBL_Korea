@@ -20,22 +20,28 @@ class SimpleDriveController(Node):
         
         self.base_speed = 0.12
         self.min_speed = 0.06
-        self.kp = 0.008
-        self.kd = 0.003
+        
+        # --- TUNING PID (NAPRAWA WĘŻYKOWANIA) ---
+        # kp obniżone z 0.008 na 0.0055 (Mniej nerwowy skręt)
+        self.kp = 0.0055 
+        # kd podbite z 0.003 na 0.007 (Mocny "amortyzator", kontruje przy rozbujaniu)
+        self.kd = 0.007  
+        
         self.last_offset = 0.0
 
     def vision_callback(self, msg):
         twist = Twist()
         offset = msg.data 
 
-        if offset == 999.0: 
+        if offset == 999.0: # Awaryjny stop
             twist.linear.x = 0.0
             twist.angular.z = 0.0
             self.cmd_vel_pub.publish(twist)
             return
 
+        # Bieg wsteczny
         if offset == 888.0: 
-            twist.linear.x = -0.15
+            twist.linear.x = -0.15 
             twist.angular.z = 0.0
             self.cmd_vel_pub.publish(twist)
             return
@@ -60,7 +66,7 @@ def main(args=None):
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
-        node.get_logger().info("Ctrl+C")
+        node.get_logger().info("Wykryto Ctrl+C! Wymuszam zatrzymanie silników...")
         
         emergency_stop = Twist()
         emergency_stop.linear.x = 0.0

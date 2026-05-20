@@ -5,7 +5,7 @@ from std_msgs.msg import Float32
 from sensor_msgs.msg import LaserScan
 from visualization_msgs.msg import Marker, MarkerArray
 from std_msgs.msg import Float32MultiArray
-from rclpy.qos import qos_profile_sensor_data  
+from rclpy.qos import qos_profile_sensor_data
 import math
 import time
 import threading
@@ -17,36 +17,43 @@ class LidarSmartAvoider(Node):
     def __init__(self):
         super().__init__('lidar_smart_avoider_node')
 
-        # NASŁUCHIWANIE
         self.scan_sub = self.create_subscription(LaserScan, '/scan_raw', self.scan_callback, 10)
-        self.gui_cmd_subscriber = self.create_subscription(Float32, '/vision/offset_raw', self.gui_cmd_callback, qos_profile_sensor_data)
         self.vision_sub = self.create_subscription(Float32MultiArray, '/vision/lane_telemetry', self.telemetry_callback, qos_profile_sensor_data)
+        self.gui_cmd_subscriber = self.create_subscription(Float32, '/vision/offset_raw', self.gui_cmd_callback, qos_profile_sensor_data)
         
-        # PUBLIKACJA DO KÓŁ (JEDYNY NADAJNIK W SYSTEMIE)
         self.offset_pub = self.create_publisher(Float32, 'offset_value', 10)
         self.marker_pub = self.create_publisher(MarkerArray, '/obstacle_markers', 10)
         
-        self.engine_enabled = False 
-        self.last_engine_state = False
-        
-        # DANE Z KAMERY (Fuzja)
+        self.engine_enabled = True 
+        self.last_engine_state = True
         self.camera_desired_offset = 0.0
-        self.camera_bumper_active = False
-
+        
+        # --- ZMIENNE LINII CIĄGŁEJ (Odczyt z kamery) ---
+        self.cam_left_px = 0.0
+        self.cam_right_px = 0.0
+        # PRÓG LINII CIĄGŁEJ: Jeśli pod kołem jest więcej niż 2800 białych pikseli, to znaczy że linia jest gruba/ciągła (zakaz przekraczania)
+        self.solid_line_px = 2800.0 
+        
         self.trigger_distance = 0.45      
         self.critical_distance = 0.16     
-        self.steering_alpha = 0.25 
-        self.current_steer = 0.0
+        self.target_side_distance = 0.35  
+        self.kp_wall = 250.0              
 
-        # --- NOWOŚĆ: SYSTEM POTWIERDZANIA PRZESZKODY (DEBOUNCING) ---
-        self.obstacle_confirm_counter = 0
-        self.required_confirmations = 4   # Przeszkoda musi być widoczna przez 4 skany z rzędu (ok. 0.3 - 0.4 sekundy)
+        self.memory_ttl = 1.2  
+
+        self.current_steer = 0.0          
+        self.base_swerve = 220.0 # Trochę mocniejszy skręt początkowy
 
         self.state = 'NORMAL' 
         self.state_start_time = time.time()
-        self.swerve_dir = 0.0
 
         self.front_dist, self.left_dist, self.right_dist = 999.0, 999.0, 999.0
+        self.mem_l = {'dist': 999.0, 'time': 0.0}
+        self.mem_r = {'dist': 999.0, 'time': 0.0}
+        self.mem_f = {'dist': 999.0, 'time': 0.0}
+        
+        self.track_side = None 
+        self.swerve_sign = 0.0  
         self.emergency_stop = False
         self.has_keyboard = False
         
@@ -62,7 +69,14 @@ class LidarSmartAvoider(Node):
             self.key_thread.start()
 
         self.timer = self.create_timer(0.05, self.control_loop)
-        self.get_logger().info("Avoider [MASTER]: DATA FUSION + DEBOUNCING AKTYWNY!")
+        self.get_logger().info("MASTER GOTOWY: Detekcja Linii Ciągłej włączona!")
+
+    def telemetry_callback(self, msg):
+        # Pobieranie offsetu ORAZ liczby pikseli pod kołami (dane z zderzaka kamery)
+        if len(msg.data) >= 12:
+            self.camera_desired_offset = msg.data[8]
+            self.cam_left_px = msg.data[10]
+            self.cam_right_px = msg.data[11]
 
     def gui_cmd_callback(self, msg):
         if msg.data == 999.0:
@@ -72,13 +86,9 @@ class LidarSmartAvoider(Node):
             self.engine_enabled = True
 
         if self.engine_enabled != self.last_engine_state:
-            if self.engine_enabled: self.get_logger().info(">>> MASTER: ENGINES ON! <<<")
-            else: self.get_logger().warn(">>> MASTER: ENGINES OFF (STOP) <<<")
+            if self.engine_enabled: self.get_logger().info(">>> ENGINES ON <<<")
+            else: self.get_logger().warn(">>> ENGINES OFF <<<")
             self.last_engine_state = self.engine_enabled
-
-    def telemetry_callback(self, msg):
-        self.camera_desired_offset = msg.data[8]
-        self.camera_bumper_active = (msg.data[9] == 1.0)
 
     def keyboard_listener(self):
         try:
@@ -94,11 +104,14 @@ class LidarSmartAvoider(Node):
     def scan_callback(self, msg):
         if self.emergency_stop or not self.engine_enabled: return 
             
+        current_time = time.time()
         clusters = []
         current_cluster = []
+        
         for i, r in enumerate(msg.ranges):
             if math.isinf(r) or r < 0.05 or r > 1.5: continue
             angle = msg.angle_min + i * msg.angle_increment
+            
             if not current_cluster: current_cluster.append((r, angle))
             else:
                 last_r, last_angle = current_cluster[-1]
@@ -111,7 +124,6 @@ class LidarSmartAvoider(Node):
 
         valid_obstacles = []
         for c in clusters:
-            # FILTR PRZESTRZENNY (Wymiarowy)
             if len(c) < 3: continue
             first_pt, last_pt = c[0], c[-1]
             if math.sqrt(first_pt[0]**2 + last_pt[0]**2 - 2*first_pt[0]*last_pt[0]*math.cos(first_pt[1] - last_pt[1])) < 0.04: continue
@@ -119,69 +131,118 @@ class LidarSmartAvoider(Node):
             
         self.publish_rviz_markers(valid_obstacles)
 
-        raw_f, decide_l, decide_r = 999.0, 999.0, 999.0
+        raw_f, raw_l, raw_r, decide_l, decide_r = 999.0, 999.0, 999.0, 999.0, 999.0
+        
         for r, angle in valid_obstacles:
             norm_angle = math.atan2(math.sin(angle), math.cos(angle))
             if -0.35 < norm_angle < 0.35: raw_f = min(raw_f, r)
+            if 1.0 < norm_angle < 2.2: raw_l = min(raw_l, r)
+            if -2.2 < norm_angle < -1.0: raw_r = min(raw_r, r)
             if 0.1 < norm_angle < 0.8: decide_l = min(decide_l, r)
             if -0.8 < norm_angle < -0.1: decide_r = min(decide_r, r)
 
-        self.front_dist = raw_f
-        current_time = time.time()
+        if raw_r < 1.0: self.mem_r = {'dist': raw_r, 'time': current_time}
+        elif (current_time - self.mem_r['time']) < self.memory_ttl: raw_r = self.mem_r['dist']
 
-        # ==========================================
-        # MASZYNA STANÓW: Fuzja Danych i Zmiana Pasa
-        # ==========================================
-        if self.state in ['LANE_CHANGE_OUT', 'LANE_CHANGE_ALIGN']:
+        if raw_l < 1.0: self.mem_l = {'dist': raw_l, 'time': current_time}
+        elif (current_time - self.mem_l['time']) < self.memory_ttl: raw_l = self.mem_l['dist']
+            
+        if raw_f < 1.0: self.mem_f = {'dist': raw_f, 'time': current_time}
+        elif (current_time - self.mem_f['time']) < self.memory_ttl: raw_f = self.mem_f['dist']
+
+        self.front_dist, self.left_dist, self.right_dist = raw_f, raw_l, raw_r
+
+        if self.state in ['NORMAL', 'SWERVE', 'PASSING']:
             if self.front_dist < self.critical_distance:
-                self.get_logger().error("AWARYJNE COFANIE!")
+                self.get_logger().error("ZBYT BLISKO! Cofam...")
                 self.state = 'REVERSE'
-                self.state_start_time = current_time
+                self.state_start_time = time.time()
                 return
 
+        # --- NOWA LOGIKA Z ZAKAZEM WYPRZEDZANIA ---
         if self.state == 'NORMAL':
-            # --- FILTR CZASOWY (Debouncing) ---
             if self.front_dist < self.trigger_distance:
-                self.obstacle_confirm_counter += 1
                 
-                if self.obstacle_confirm_counter >= self.required_confirmations:
-                    self.get_logger().warn(f"PRZESZKODA POTWIERDZONA ({self.required_confirmations} skanów)! Rozpoczynam ZMIANĘ PASA!")
-                    
+                # Sprawdzamy czy po prawej/lewej nie ma linii ciągłej
+                forbidden_left = (self.cam_left_px > self.solid_line_px)
+                forbidden_right = (self.cam_right_px > self.solid_line_px)
+
+                # Możemy wyprzedzać z danej strony tylko, jeśli jest miejsce z LiDARa ORAZ nie ma tam ciągłej
+                can_go_left = (decide_l > 0.4) and not forbidden_left
+                can_go_right = (decide_r > 0.4) and not forbidden_right
+
+                if can_go_left and not can_go_right:
+                    self.track_side = 'LEFT'  
+                    self.swerve_sign = 1.0  
+                    self.get_logger().warn("Wymijam z LEWEJ (Prawa zablokowana)")
+                elif can_go_right and not can_go_left:
+                    self.track_side = 'RIGHT' 
+                    self.swerve_sign = -1.0 
+                    self.get_logger().warn("Wymijam z PRAWEJ (Lewa zablokowana)")
+                elif can_go_left and can_go_right:
+                    # Obie strony wolne (linia przerywana z obu stron), wybieramy szerszą
                     if decide_l > decide_r:
-                        self.swerve_dir = 280.0  
+                        self.track_side = 'LEFT'; self.swerve_sign = 1.0
                     else:
-                        self.swerve_dir = -280.0 
-                        
-                    self.state = 'LANE_CHANGE_OUT'
-                    self.state_start_time = current_time
-                    self.obstacle_confirm_counter = 0 # Reset po udanym triggerze
+                        self.track_side = 'RIGHT'; self.swerve_sign = -1.0
+                    self.get_logger().warn("Obie strony dozwolone, wybieram optymalną.")
+                else:
+                    self.get_logger().error("Brak możliwości wyminięcia! Hamowanie!")
+                    # Obie zablokowane linią ciągłą lub ścianą. Wymusza zatrzymanie (lub cofanie).
+                    self.state = 'REVERSE'
+                    self.state_start_time = time.time()
+                    return
+                    
+                self.state = 'SWERVE'
+                self.state_start_time = time.time()
+                
+        elif self.state == 'SWERVE':
+            if self.front_dist > 0.45:
+                if self.track_side == 'RIGHT' and self.right_dist < 0.8: self.state = 'PASSING'
+                elif self.track_side == 'LEFT' and self.left_dist < 0.8: self.state = 'PASSING'
+                    
+            if time.time() - self.state_start_time > 2.5:
+                self.state = 'RETURN'
+                self.state_start_time = time.time()
+                
+        elif self.state == 'PASSING':
+            # Zmieniamy warunek powrotu:
+            # 1. Musimy być wystarczająco daleko od przeszkody (boczny dystans > 0.9m)
+            # 2. SEKCJA BEZPIECZEŃSTWA: Sprawdzamy czy w sektorach bocznych (6-8 godzina) jest czysto
+            
+            # Sektor 6-8 godzina to kąty od -2.5 do -1.5 radiana (dla prawej strony)
+            # lub od 1.5 do 2.5 radiana (dla lewej strony)
+            
+            clear_behind = True
+            if self.track_side == 'RIGHT':
+                # Jeśli omijamy prawą stroną, sprawdzamy czy na prawej burcie (sektor tył-bok) jest czysto
+                # Szukamy czy coś jest bliżej niż 0.4m w strefie tyłu
+                if self.right_dist < 0.4: clear_behind = False
             else:
-                # Jeśli przeszkoda znika choć na chwilę, zerujemy licznik 
-                # (eliminuje to kumulację pojedynczych artefaktów w czasie)
-                if self.obstacle_confirm_counter > 0:
-                    self.obstacle_confirm_counter = 0
+                # Jeśli omijamy lewą stroną, sprawdzamy lewą burtę
+                if self.left_dist < 0.4: clear_behind = False
+
+            # Warunek powrotu: minęliśmy przeszkodę bocznie ORAZ tył jest czysty
+            is_passed = (self.right_dist > 0.9) if self.track_side == 'RIGHT' else (self.left_dist > 0.9)
+            
+            if is_passed and clear_behind:
+                self.get_logger().info("Droga za przeszkodą czysta - wracam na tor.")
+                self.state = 'RETURN'
+                self.state_start_time = time.time()
                 
-        elif self.state == 'LANE_CHANGE_OUT':
-            if current_time - self.state_start_time > 0.8:
-                self.state = 'LANE_CHANGE_ALIGN'
-                self.state_start_time = current_time
-                
-        elif self.state == 'LANE_CHANGE_ALIGN':
-            if current_time - self.state_start_time > 0.5:
-                self.get_logger().info("Manewr zakończony. Kamera przejmuje kontrolę w nowym pasie.")
+        elif self.state == 'RETURN':
+            # ZMIANA: Skrócono czas powrotu z 1.2s na 0.5s! (Zapobiega zjawisku stanięcia w poprzek bandy)
+            if time.time() - self.state_start_time > 0.5: 
                 self.state = 'NORMAL'
-                self.obstacle_confirm_counter = 0 # Zabezpieczenie zerowania
                 
         elif self.state == 'REVERSE':
-            if current_time - self.state_start_time > 1.5:
-                self.state = 'NORMAL'
-                self.obstacle_confirm_counter = 0
+            if time.time() - self.state_start_time > 1.5: self.state = 'NORMAL'
 
     def publish_rviz_markers(self, obstacles):
         marker_array = MarkerArray()
-        delete_marker = Marker()
-        delete_marker.action = Marker.DELETEALL
+        delete_marker = Marker(); delete_marker.action = Marker.DELETEALL
         marker_array.markers.append(delete_marker)
+
         for idx, (r, angle) in enumerate(obstacles):
             if r > 0.70: continue 
             m = Marker()
@@ -201,28 +262,32 @@ class LidarSmartAvoider(Node):
         target_steer = 0.0
 
         if self.emergency_stop or not self.engine_enabled:
-            self.current_steer = 0.0 
             msg.data = 999.0
+            self.current_steer = 0.0 
             self.offset_pub.publish(msg)
             return
 
-        # ==========================================
-        # WYKONANIE FUZJI (Master-Slave)
-        # ==========================================
         if self.state == 'NORMAL':
-            target_steer = self.camera_desired_offset
-            
+            target_steer = self.camera_desired_offset 
         elif self.state == 'REVERSE':
             target_steer = 888.0 
-            
-        elif self.state == 'LANE_CHANGE_OUT':
-            target_steer = self.swerve_dir
-            
-        elif self.state == 'LANE_CHANGE_ALIGN':
-            target_steer = -self.swerve_dir * 0.35
+        elif self.state == 'SWERVE':
+            urgency = min(self.trigger_distance / max(self.front_dist, 0.05), 1.8) 
+            target_steer = self.swerve_sign * self.base_swerve * urgency
+        elif self.state == 'PASSING':
+            if self.track_side == 'RIGHT': target_steer = max(-220.0, min(220.0, (self.right_dist - self.target_side_distance) * self.kp_wall))
+            else: target_steer = max(-220.0, min(220.0, (self.target_side_distance - self.left_dist) * self.kp_wall))
+        elif self.state == 'RETURN':
+            # ZMIANA: Mniejsza siła kontry przy powrocie
+            target_steer = -self.swerve_sign * (self.base_swerve * 0.4)
 
-        if self.state != 'REVERSE':
-            self.current_steer = self.current_steer + self.steering_alpha * (target_steer - self.current_steer)
+        # ZMIANA W PŁYNNOŚCI (Naprawa Wężykowania z punktu 1):
+        if self.state == 'NORMAL':
+            # Gdy steruje kamera, chcemy BARDZO SZYBKIEJ reakcji (0.7) - likwiduje opóźnienie/lag
+            self.current_steer = self.current_steer + 0.7 * (target_steer - self.current_steer)
+        elif self.state != 'REVERSE':
+            # Gdy manewruje LiDAR, chcemy powolnych i płynnych ruchów niczym limuzyna (0.15)
+            self.current_steer = self.current_steer + 0.15 * (target_steer - self.current_steer)
         else:
             self.current_steer = 888.0
 

@@ -23,8 +23,16 @@ class ProcessFrame(Node):
         self.missing_right = 0
         self.last_offset = 0.0
 
-        self.lower_color = np.array([0, 0, 0], dtype="uint8")
-        self.upper_color = np.array([180, 255, 80], dtype="uint8")
+        self.lower_color = np.array([20, 80, 80], dtype="uint8")
+        self.upper_color = np.array([40, 255, 255], dtype="uint8")
+        
+        self.p_erode = 1
+        self.p_dilate = 1
+        self.p_canny_min = 30
+        self.p_canny_max = 120
+        self.p_hough_thr = 15
+        self.p_hough_min = 15
+        self.p_hough_max = 50
         self.current_curve_threshold = 0.0005 
 
         self.bumper_state = 'INACTIVE' 
@@ -36,24 +44,35 @@ class ProcessFrame(Node):
             Image, '/ascamera/camera_publisher/rgb0/image', self.listener_callback, qos_profile_sensor_data)
         self.color_subscriber = self.create_subscription(
             Int32MultiArray, '/mentorpi/vision/hsv_thresholds', self.color_callback, 10)
-        self.curve_subscriber = self.create_subscription(
-            Float32, '/mentorpi/vision/curve_threshold', self.curve_callback, 10)
+        self.algo_params_subscriber = self.create_subscription(
+            Float32MultiArray, '/mentorpi/vision/algo_params', self.algo_params_callback, 10)
         
         self.telemetry_publisher = self.create_publisher(Float32MultiArray, '/vision/lane_telemetry', 10)
-        self.mask_publisher = self.create_publisher(Image, '/vision/robot_mask', qos_profile_sensor_data)
 
         self.last_time = time.time()
         self.fps = 0.0
-        self.get_logger().info('Vision Node [SLAVE]: Gotowy. Obliczam środek i wysyłam Telemetrię do LiDARa.')
+        self.get_logger().info('Vision Node [SLAVE] z klonowaniem linii i telemetrią zderzaków gotowy.')
+
+    def algo_params_callback(self, msg):
+        data = msg.data
+        if len(data) == 8:
+            self.p_erode = int(data[0])
+            self.p_dilate = int(data[1])
+            self.p_canny_min = int(data[2])
+            self.p_canny_max = int(data[3])
+            self.p_hough_thr = int(data[4])
+            self.p_hough_min = int(data[5])
+            self.p_hough_max = int(data[6])
+            self.current_curve_threshold = float(data[7])
+            self.get_logger().info(f"==> Change: Erode={self.p_erode}, Dilate={self.p_dilate}, Canny={self.p_canny_min}-{self.p_canny_max}, HoughMin={self.p_hough_min}")
 
     def color_callback(self, msg):
         data = msg.data
         if len(data) == 6:
             self.lower_color = np.array([data[0], data[1], data[2]], dtype="uint8")
             self.upper_color = np.array([data[3], data[4], data[5]], dtype="uint8")
-
-    def curve_callback(self, msg):
-        self.current_curve_threshold = msg.data
+            # PRZYWRÓCONY LOG
+            self.get_logger().info(f"==> Change color: Min={self.lower_color}, Max={self.upper_color}")
 
     def listener_callback(self, msg):
         current_time = time.time()
@@ -93,18 +112,13 @@ class ProcessFrame(Node):
         cv.fillPoly(roi_mask, vertices, 255)
         roi = cv.bitwise_and(mask, roi_mask)
 
-        try:
-            mask_msg = self.bridge.cv2_to_imgmsg(roi, encoding="mono8")
-            self.mask_publisher.publish(mask_msg)
-        except Exception:
-            pass
-
+        roi_blurred = cv.GaussianBlur(roi, (7, 7), 0)
         kernel = np.ones((5, 5), np.uint8)
-        roi_clean = cv.erode(roi, kernel, iterations=1)
-        roi_clean = cv.dilate(roi_clean, kernel, iterations=2)
+        roi_clean = cv.erode(roi_blurred, kernel, iterations=self.p_erode)
+        roi_clean = cv.dilate(roi_clean, kernel, iterations=self.p_dilate)
 
-        edges = cv.Canny(roi_clean, 30, 120)
-        lines = cv.HoughLinesP(edges, 1, np.pi/180, 30, minLineLength=30, maxLineGap=60)
+        edges = cv.Canny(roi_clean, self.p_canny_min, self.p_canny_max)
+        lines = cv.HoughLinesP(edges, 1, np.pi/180, self.p_hough_thr, minLineLength=self.p_hough_min, maxLineGap=self.p_hough_max)
 
         left_lines, right_lines = [], []
         if lines is not None:
@@ -112,19 +126,23 @@ class ProcessFrame(Node):
                 for x1, y1, x2, y2 in line:
                     real_y1, real_y2 = y1 + crop_y, y2 + crop_y
                     slope = (real_y2 - real_y1) / (x2 - x1 + 0.0001)
-                    if abs(slope) < 0.15: continue
-                    if (x1 + x2) / 2 < width / 2: left_lines.append((x1, real_y1, x2, real_y2))
-                    else: right_lines.append((x1, real_y1, x2, real_y2))
+                    
+                    if abs(slope) < 0.1: continue # Odrzucamy poziome śmieci
+
+                    if slope < 0: 
+                        left_lines.append((x1, real_y1, x2, real_y2))
+                    else: 
+                        right_lines.append((x1, real_y1, x2, real_y2))
 
         return left_lines, right_lines, roi_clean
 
     def fit_and_filter(self, lines, history, missing_counter):
         if len(lines) == 0:
             missing_counter += 1
-            if missing_counter > 45: history.clear()
+            if missing_counter > 15: history.clear()
             elif len(history) > 0: history.append(history[-1]) 
             
-            if len(history) > 0: return np.mean(history, axis=0), missing_counter
+            if len(history) > 0: return history[-1], missing_counter
             else: return None, missing_counter
 
         x_coords, y_coords = [], []
@@ -133,50 +151,41 @@ class ProcessFrame(Node):
             y_coords.extend([y1, y2])
 
         missing_counter = 0
-        if len(np.unique(y_coords)) < 3: return None, missing_counter
+        if len(np.unique(y_coords)) < 2: return None, missing_counter
 
-        poly2 = np.polyfit(y_coords, x_coords, 2)
-        curvature = poly2[0]
+        poly1 = np.polyfit(y_coords, x_coords, 1)
+        poly = np.array([0.0, poly1[0], poly1[1]]) # A=0 (brak łuku), B=kąt, C=pozycja
 
-        if abs(curvature) < self.current_curve_threshold:
-            poly1 = np.polyfit(y_coords, x_coords, 1)
-            poly = np.array([0.0, poly1[0], poly1[1]])
+        if len(history) == 0:
+            history.append(poly)
         else:
-            poly = poly2
-            poly[0] = np.clip(poly[0], -0.003, 0.003)
-
-        history.append(poly)
-        if len(history) == 7:
-            smoothed_poly = np.zeros(3)
-            for i in range(7): smoothed_poly += self.fir_weights[i] * history[i]
-            return smoothed_poly, missing_counter
-        else:
-            return np.mean(history, axis=0), missing_counter
+            smoothed_poly = 0.8 * poly + 0.2 * history[-1]
+            history.append(smoothed_poly)
+            
+        return history[-1], missing_counter
 
     def calculate_and_log(self, frame_shape, left_poly, right_poly, roi_mask):
         current_time = time.time()
         height, width, _ = frame_shape
         target_offset = self.last_offset
-        lines_detected = 0
         center_x = width / 2.0
         lookahead_y = int(height * 0.70) 
-        LANE_WIDTH_PX = 380.0 
+        
+        LANE_WIDTH_PX = 470.0 
+        mid_poly = None
 
-        left_x_look, right_x_look = None, None
+        if left_poly is not None and right_poly is not None:
+            mid_poly = (left_poly + right_poly) / 2.0
+        elif left_poly is not None:
+            mid_poly = np.copy(left_poly)
+            mid_poly[2] += (LANE_WIDTH_PX / 2.0)
+        elif right_poly is not None:
+            mid_poly = np.copy(right_poly)
+            mid_poly[2] -= (LANE_WIDTH_PX / 2.0)
 
-        if left_poly is not None:
-            left_x_look = left_poly[0]*(lookahead_y**2) + left_poly[1]*lookahead_y + left_poly[2]
-            lines_detected += 1
-        if right_poly is not None:
-            right_x_look = right_poly[0]*(lookahead_y**2) + right_poly[1]*lookahead_y + right_poly[2]
-            lines_detected += 1
-
-        if lines_detected == 2:
-            mid_x = (left_x_look + right_x_look) / 2.0
-            target_offset = float(mid_x - center_x)
-        elif lines_detected == 1:
-            if left_poly is not None: target_offset = float((left_x_look + (LANE_WIDTH_PX / 2.0)) - center_x)
-            elif right_poly is not None: target_offset = float((right_x_look - (LANE_WIDTH_PX / 2.0)) - center_x)
+        if mid_poly is not None:
+            mid_x_look = mid_poly[0]*(lookahead_y**2) + mid_poly[1]*lookahead_y + mid_poly[2]
+            target_offset = float(mid_x_look - center_x)
 
         crop_h, crop_w = roi_mask.shape
         bumper_h, bumper_w = 70, 180   
@@ -214,16 +223,18 @@ class ProcessFrame(Node):
 
         self.last_offset = target_offset
 
-        telemetry_array = [0.0] * 10
+        telemetry_array = [0.0] * 12
         if left_poly is not None:
             telemetry_array[0] = 1.0
-            telemetry_array[1], telemetry_array[2], telemetry_array[3] = left_poly[0], left_poly[1], left_poly[2]
+            telemetry_array[1:4] = left_poly
         if right_poly is not None:
             telemetry_array[4] = 1.0
-            telemetry_array[5], telemetry_array[6], telemetry_array[7] = right_poly[0], right_poly[1], right_poly[2]
+            telemetry_array[5:8] = right_poly
             
         telemetry_array[8] = float(target_offset) 
         telemetry_array[9] = 1.0 if bumper_active_flag else 0.0
+        telemetry_array[10] = float(left_pixels)
+        telemetry_array[11] = float(right_pixels)
         
         tel_msg = Float32MultiArray()
         tel_msg.data = telemetry_array
