@@ -23,16 +23,16 @@ class SimpleDriveController(Node):
         
         # --- TUNING: spokojniejsze trzymanie pasa ---
         # kp mniejsze = mniej nerwowa reakcja na błąd pozycji.
-        self.kp = 0.0026
+        self.kp = 0.0038
         # kd mniejsze i liczone na przefiltrowanym błędzie = tłumienie, bez szarpania.
-        self.kd = 0.0008
+        self.kd = 0.0012
         
         self.last_offset = 0.0
         self.filtered_offset = 0.0
         self.offset_alpha = 0.25       # filtr offsetu z kamery
         self.max_offset_step = 18.0    # limit zmiany offsetu na wiadomość [px]
-        self.max_angular = 0.42        # limit skrętu rad/s
-        self.max_angular_step = 0.035   # limit zmiany skrętu między wiadomościami
+        self.max_angular = 0.75        # limit skrętu rad/s
+        self.max_angular_step = 0.08   # limit zmiany skrętu między wiadomościami
         self.last_angular = 0.0
 
     def vision_callback(self, msg):

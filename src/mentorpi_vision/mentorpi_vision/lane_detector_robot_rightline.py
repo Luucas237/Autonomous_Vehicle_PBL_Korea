@@ -22,6 +22,10 @@ class ProcessFrame(Node):
         self.missing_left = 0
         self.missing_right = 0
         self.last_offset = 0.0
+        self.filtered_offset = 0.0
+        self.max_offset_step = 22.0   # maksymalna zmiana offsetu na jedną klatkę [px]
+        self.offset_alpha = 0.22      # filtr dolnoprzepustowy offsetu; mniejsze = płynniej
+        self.lane_width_px = 400.0    # realny rozstaw linii pasa [px]
 
         self.lower_color = np.array([20, 80, 80], dtype="uint8")
         self.upper_color = np.array([40, 255, 255], dtype="uint8")
@@ -51,7 +55,7 @@ class ProcessFrame(Node):
 
         self.last_time = time.time()
         self.fps = 0.0
-        self.get_logger().info('Vision Node [SLAVE] z klonowaniem linii i telemetrią zderzaków gotowy.')
+        self.get_logger().info('Vision Node [SLAVE] - jazda po prawej linii, pas 400 px, wygładzanie offsetu gotowe.')
 
     def algo_params_callback(self, msg):
         data = msg.data
@@ -171,34 +175,58 @@ class ProcessFrame(Node):
         center_x = width / 2.0
         lookahead_y = int(height * 0.70) 
         
-        LANE_WIDTH_PX = 470.0 
-        mid_poly = None
+        # ============================================================
+        # GŁÓWNA ZMIANA: jazda w oparciu o PRAWĄ linię pasa.
+        # Zakładamy, że odległość między dwiema liniami pasa to 400 px,
+        # czyli środek pasa jest 200 px w lewo od prawej linii.
+        #
+        # offset > 0  -> środek pasa jest po prawej od kamery
+        # offset < 0  -> środek pasa jest po lewej od kamery
+        # ============================================================
+        raw_target_offset = None
+        half_lane = self.lane_width_px / 2.0
 
-        if left_poly is not None and right_poly is not None:
-            mid_poly = (left_poly + right_poly) / 2.0
+        if right_poly is not None:
+            # Priorytet: prawa linia. To stabilizuje jazdę, gdy lewa jest przerywana
+            # albo chwilowo znika podczas wymijania/przejazdu między pasami.
+            right_x_look = right_poly[0]*(lookahead_y**2) + right_poly[1]*lookahead_y + right_poly[2]
+            desired_center_x = right_x_look - half_lane
+            raw_target_offset = float(desired_center_x - center_x)
+
         elif left_poly is not None:
-            mid_poly = np.copy(left_poly)
-            mid_poly[2] += (LANE_WIDTH_PX / 2.0)
-        elif right_poly is not None:
-            mid_poly = np.copy(right_poly)
-            mid_poly[2] -= (LANE_WIDTH_PX / 2.0)
+            # Awaryjnie, gdy prawej nie widać, rekonstruujemy środek z lewej linii.
+            left_x_look = left_poly[0]*(lookahead_y**2) + left_poly[1]*lookahead_y + left_poly[2]
+            desired_center_x = left_x_look + half_lane
+            raw_target_offset = float(desired_center_x - center_x)
 
-        if mid_poly is not None:
-            mid_x_look = mid_poly[0]*(lookahead_y**2) + mid_poly[1]*lookahead_y + mid_poly[2]
-            target_offset = float(mid_x_look - center_x)
+        if raw_target_offset is not None:
+            # 1) ograniczenie skoku offsetu między klatkami, żeby nie było przeskoku
+            #    z maksymalnego skrętu w prawo na maksymalny w lewo.
+            delta = raw_target_offset - self.filtered_offset
+            delta = float(np.clip(delta, -self.max_offset_step, self.max_offset_step))
+            stepped_offset = self.filtered_offset + delta
+
+            # 2) filtr dolnoprzepustowy, czyli miękkie dochodzenie do celu.
+            self.filtered_offset = (1.0 - self.offset_alpha) * self.filtered_offset + self.offset_alpha * stepped_offset
+            target_offset = self.filtered_offset
+        else:
+            # Gdy nie widzimy żadnej linii, nie wymyślamy nowego skrętu, tylko
+            # spokojnie trzymamy poprzedni kierunek.
+            target_offset = self.last_offset
 
         crop_h, crop_w = roi_mask.shape
         bumper_h, bumper_w = 70, 180   
 
-        left_zone = roi_mask[crop_h - bumper_h : crop_h, 10 : bumper_w]
-        right_zone = roi_mask[crop_h - bumper_h : crop_h, crop_w - bumper_w - 10 : crop_w]
+        left_zone = roi_mask[crop_h - bumper_h : crop_h, 0 : bumper_w]
+        right_zone = roi_mask[crop_h - bumper_h : crop_h, crop_w - bumper_w : crop_w]
         
         left_pixels = cv.countNonZero(left_zone)
         right_pixels = cv.countNonZero(right_zone)
         bumper_active_flag = False
 
         def calculate_dynamic_force(pixels):
-            return 100.0 + (200.0) * min(1.0, max(0.0, (pixels - self.pixel_threshold) / 3000.0)) 
+            # Zderzak zostaje, ale bez agresywnego szarpnięcia kierownicą.
+            return 60.0 + (90.0) * min(1.0, max(0.0, (pixels - self.pixel_threshold) / 3000.0)) 
 
         if self.bumper_state == 'INACTIVE':
             if left_pixels > self.pixel_threshold:
@@ -212,13 +240,13 @@ class ProcessFrame(Node):
 
         if self.bumper_state == 'ESCAPING':
             bumper_active_flag = True
-            if current_time - self.bumper_start_time < 0.6: target_offset = self.bumper_dir
+            if current_time - self.bumper_start_time < 0.35: target_offset = self.bumper_dir
             else:
                 self.bumper_state = 'ALIGNING'
                 self.bumper_start_time = current_time
         elif self.bumper_state == 'ALIGNING':
             bumper_active_flag = True
-            if current_time - self.bumper_start_time < 0.4: target_offset = -self.bumper_dir * 0.30 
+            if current_time - self.bumper_start_time < 0.25: target_offset = -self.bumper_dir * 0.20 
             else: self.bumper_state = 'INACTIVE'
 
         self.last_offset = target_offset

@@ -31,8 +31,8 @@ class LidarSmartAvoider(Node):
         # --- ZMIENNE LINII CIĄGŁEJ (Odczyt z kamery) ---
         self.cam_left_px = 0.0
         self.cam_right_px = 0.0
-        # PRÓG LINII CIĄGŁEJ: Jeśli pod kołem jest więcej niż 1600 białych pikseli, to znaczy że linia jest gruba/ciągła (zakaz przekraczania)
-        self.solid_line_px = 1600.0 
+        # PRÓG LINII CIĄGŁEJ: Jeśli pod kołem jest więcej niż 2800 białych pikseli, to znaczy że linia jest gruba/ciągła (zakaz przekraczania)
+        self.solid_line_px = 2800.0 
         
         self.trigger_distance = 0.45      
         self.critical_distance = 0.16     
@@ -42,7 +42,7 @@ class LidarSmartAvoider(Node):
         self.memory_ttl = 1.2  
 
         self.current_steer = 0.0          
-        self.base_swerve = 180.0 # Trochę mocniejszy skręt początkowy
+        self.base_swerve = 190.0 # Łagodniejszy skręt początkowy; logika LiDAR zostaje ta sama
 
         self.state = 'NORMAL' 
         self.state_start_time = time.time()
@@ -283,11 +283,13 @@ class LidarSmartAvoider(Node):
 
         # ZMIANA W PŁYNNOŚCI (Naprawa Wężykowania z punktu 1):
         if self.state == 'NORMAL':
-            # Gdy steruje kamera, chcemy BARDZO SZYBKIEJ reakcji (0.7) - likwiduje opóźnienie/lag
-            self.current_steer = self.current_steer + 0.7 * (target_steer - self.current_steer)
+            # Gdy steruje kamera, nie przepuszczamy nagłych skoków offsetu 1:1.
+            # 0.25 = płynniej, bez skakania z max prawo na max lewo.
+            target_steer = max(-180.0, min(180.0, target_steer))
+            self.current_steer = self.current_steer + 0.25 * (target_steer - self.current_steer)
         elif self.state != 'REVERSE':
-            # Gdy manewruje LiDAR, chcemy powolnych i płynnych ruchów niczym limuzyna (0.15)
-            self.current_steer = self.current_steer + 0.15 * (target_steer - self.current_steer)
+            # Decyzje LiDAR bez zmian, tylko wykonanie skrętu łagodniejsze.
+            self.current_steer = self.current_steer + 0.12 * (target_steer - self.current_steer)
         else:
             self.current_steer = 888.0
 
