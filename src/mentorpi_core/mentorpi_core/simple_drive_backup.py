@@ -1,84 +1,83 @@
 #!/usr/bin/env python3
-import rclpy
-from rclpy.node import Node
-from std_msgs.msg import Float32
-from geometry_msgs.msg import Twist
 import time
+from gpiozero import PhaseEnableMotor, AngularServo
+from gpiozero.pins.lgpio import LGPIOFactory
+from gpiozero import Device
 
-class SimpleDriveController(Node):
-    def __init__(self):
-        super().__init__('simple_drive_node')
-        
-        self.offset_sub = self.create_subscription(
-            Float32,
-            'offset_value',
-            self.vision_callback,
-            10
-        )
-        
-        self.cmd_vel_pub = self.create_publisher(Twist, '/cmd_vel', 10)
-        
-        self.base_speed = 0.12
-        self.min_speed = 0.06
-        
-        # --- TUNING PID (NAPRAWA WĘŻYKOWANIA) ---
-        # kp obniżone z 0.008 na 0.0055 (Mniej nerwowy skręt)
-        self.kp = 0.0055 
-        # kd podbite z 0.003 na 0.007 (Mocny "amortyzator", kontruje przy rozbujaniu)
-        self.kd = 0.007  
-        
-        self.last_offset = 0.0
+try:
+    Device.pin_factory = LGPIOFactory()
+except Exception as e:
+    print(f"BŁĄD LGPIO: {e}")
+    exit(1)
 
-    def vision_callback(self, msg):
-        twist = Twist()
-        offset = msg.data 
+print("--- Test begin ---")
 
-        if offset == 999.0: # Awaryjny stop
-            twist.linear.x = 0.0
-            twist.angular.z = 0.0
-            self.cmd_vel_pub.publish(twist)
-            return
-
-        # Bieg wsteczny
-        if offset == 888.0: 
-            twist.linear.x = -0.15 
-            twist.angular.z = 0.0
-            self.cmd_vel_pub.publish(twist)
-            return
-
-        error_diff = offset - self.last_offset
-        steering_output = (offset * self.kp) + (error_diff * self.kd)
-        
-        twist.angular.z = -steering_output 
-
-        curve_factor = abs(offset) * 0.0012
-        dynamic_speed = self.base_speed - curve_factor
-        
-        twist.linear.x = max(self.min_speed, dynamic_speed)
-
-        self.last_offset = offset
-        self.cmd_vel_pub.publish(twist)
-
-def main(args=None):
-    rclpy.init(args=args)
-    node = SimpleDriveController()
+try:
+    print("[1/3] Konfiguracja pinów...")
+    # Silnik prawy: DIR (Phase) = GPIO26, PWM (Enable) = GPIO12
+    motor_right = PhaseEnableMotor(phase=26, enable=12)
+    # Silnik lewy: DIR (Phase) = GPIO24, PWM (Enable) = GPIO13
+    motor_left = PhaseEnableMotor(phase=24, enable=13)
     
-    try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        node.get_logger().info("Wykryto Ctrl+C! Wymuszam zatrzymanie silników...")
-        
-        emergency_stop = Twist()
-        emergency_stop.linear.x = 0.0
-        emergency_stop.angular.z = 0.0 
-        
-        for _ in range(3):
-            node.cmd_vel_pub.publish(emergency_stop)
-            rclpy.spin_once(node, timeout_sec=0.1)
-            
-    finally:
-        node.destroy_node()
-        rclpy.shutdown()
+    # Serwomechanizm na GPIO17 z rozszerzonymi impulsami (0.5ms - 2.5ms)
+    steering_servo = AngularServo(
+        17, 
+        min_angle=-45, 
+        max_angle=45, 
+        min_pulse_width=0.0005, 
+        max_pulse_width=0.0025
+    )
 
-if __name__ == '__main__':
-    main()
+    predkosc_testowa = 0.35
+
+    print("[2/3] Test silników DC (Napęd)...")
+    
+    print(" -> Centrowanie kół...")
+    steering_servo.angle = 0.0
+    time.sleep(1)
+
+    print(" -> Jazda do PRZODU...")
+    motor_left.forward(predkosc_testowa)
+    motor_right.forward(predkosc_testowa)
+    time.sleep(2.0)
+
+    print(" -> STOP...")
+    motor_left.stop()
+    motor_right.stop()
+    time.sleep(1.0)
+
+    print(" -> Jazda do TYŁU...")
+    motor_left.backward(predkosc_testowa)
+    motor_right.backward(predkosc_testowa)
+    time.sleep(2.0)
+
+    print(" -> STOP...")
+    motor_left.stop()
+    motor_right.stop()
+    time.sleep(1.0)
+
+    print("[3/3] Test Serwomechanizmu (Skręt)...")
+    
+    print(" -> Skręt: Maksymalnie w LEWO...")
+    steering_servo.angle = -45.0
+    time.sleep(1.5)
+
+    print(" -> Skręt: Maksymalnie w PRAWO...")
+    steering_servo.angle = 45.0
+    time.sleep(1.5)
+
+    print(" -> Powrót kół na ŚRODEK...")
+    steering_servo.angle = 0.0
+    time.sleep(1.0)
+
+    print("--- TEST ZAKOŃCZONY SUKCESEM ---")
+
+except KeyboardInterrupt:
+    print("\n[!] Test przerwany przez użytkownika (Ctrl+C)")
+finally:
+    print("Odcinanie zasilania od silników...")
+    try:
+        motor_left.stop()
+        motor_right.stop()
+    except:
+        pass

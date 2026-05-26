@@ -12,7 +12,7 @@
           <diffuse>1 1 1 1</diffuse>
           <pbr>
             <metal>
-              <albedo_map>materials/textures/makieta.png</albedo_map>
+              <albedo_map>materials/textures/makieta.jpg</albedo_map>
             </metal>
           </pbr>
         </material>
