@@ -18,22 +18,11 @@ class SimpleDriveController(Node):
         
         self.cmd_vel_pub = self.create_publisher(Twist, '/cmd_vel', 10)
         
-        self.base_speed = 0.10
-        self.min_speed = 0.055
-        
-        # --- TUNING: spokojniejsze trzymanie pasa ---
-        # kp mniejsze = mniej nerwowa reakcja na błąd pozycji.
-        self.kp = 0.0038
-        # kd mniejsze i liczone na przefiltrowanym błędzie = tłumienie, bez szarpania.
-        self.kd = 0.0012
-        
+        self.base_speed = 0.12
+        self.min_speed = 0.06
+        self.kp = 0.008
+        self.kd = 0.003
         self.last_offset = 0.0
-        self.filtered_offset = 0.0
-        self.offset_alpha = 0.25       # filtr offsetu z kamery
-        self.max_offset_step = 18.0    # limit zmiany offsetu na wiadomość [px]
-        self.max_angular = 0.75        # limit skrętu rad/s
-        self.max_angular_step = 0.08   # limit zmiany skrętu między wiadomościami
-        self.last_angular = 0.0
 
     def vision_callback(self, msg):
         twist = Twist()
@@ -45,47 +34,24 @@ class SimpleDriveController(Node):
             self.cmd_vel_pub.publish(twist)
             return
 
-        # Bieg wsteczny
+        # NOWOŚĆ: Bieg wsteczny!
         if offset == 888.0: 
-            twist.linear.x = -0.15 
+            twist.linear.x = -0.15 # Prędkość cofania
             twist.angular.z = 0.0
             self.cmd_vel_pub.publish(twist)
             return
 
-        # Ograniczamy nagłe skoki offsetu z kamery. To jest główna ochrona
-        # przed przejściem z pełnego skrętu w prawo na pełny skręt w lewo.
-        offset_delta = offset - self.filtered_offset
-        if offset_delta > self.max_offset_step:
-            offset_delta = self.max_offset_step
-        elif offset_delta < -self.max_offset_step:
-            offset_delta = -self.max_offset_step
+        error_diff = offset - self.last_offset
+        steering_output = (offset * self.kp) + (error_diff * self.kd)
+        
+        twist.angular.z = -steering_output 
 
-        stepped_offset = self.filtered_offset + offset_delta
-        self.filtered_offset = (1.0 - self.offset_alpha) * self.filtered_offset + self.offset_alpha * stepped_offset
-
-        error_diff = self.filtered_offset - self.last_offset
-        steering_output = (self.filtered_offset * self.kp) + (error_diff * self.kd)
-
-        target_angular = -steering_output
-        target_angular = max(-self.max_angular, min(self.max_angular, target_angular))
-
-        # Rate limiter na samym skręcie robota. Nawet gdy offset skoczy, koła
-        # dochodzą do nowego skrętu stopniowo.
-        angular_delta = target_angular - self.last_angular
-        if angular_delta > self.max_angular_step:
-            angular_delta = self.max_angular_step
-        elif angular_delta < -self.max_angular_step:
-            angular_delta = -self.max_angular_step
-
-        twist.angular.z = self.last_angular + angular_delta
-
-        curve_factor = abs(self.filtered_offset) * 0.0009
+        curve_factor = abs(offset) * 0.0012
         dynamic_speed = self.base_speed - curve_factor
         
         twist.linear.x = max(self.min_speed, dynamic_speed)
 
-        self.last_offset = self.filtered_offset
-        self.last_angular = twist.angular.z
+        self.last_offset = offset
         self.cmd_vel_pub.publish(twist)
 
 def main(args=None):
@@ -95,18 +61,22 @@ def main(args=None):
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
+        # --- SEKWENCJA AWARYJNEGO ZATRZYMANIA ---
         node.get_logger().info("Wykryto Ctrl+C! Wymuszam zatrzymanie silników...")
         
         emergency_stop = Twist()
         emergency_stop.linear.x = 0.0
         emergency_stop.angular.z = 0.0 
         
+        # Bombardujemy sterownik 3 razy, ALE tym razem każemy ROS-owi to fizycznie wysłać!
         for _ in range(3):
             node.cmd_vel_pub.publish(emergency_stop)
+            # To jest kluczowe: zamiast time.sleep(), kręcimy silnikiem ROSa przez 0.1s
             rclpy.spin_once(node, timeout_sec=0.1)
             
     finally:
         node.destroy_node()
+        # Ważne: shutdown wywołujemy dopiero po tym, jak spin_once wysłało pakiety
         rclpy.shutdown()
 
 if __name__ == '__main__':

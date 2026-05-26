@@ -8,265 +8,221 @@ from rclpy.qos import qos_profile_sensor_data
 
 import cv2 as cv
 import numpy as np
-from collections import deque
 import time
 
 class ProcessFrame(Node):
     def __init__(self):
-        super().__init__('lane_detector_robot_node')
+        super().__init__('lane_detector_master_gui')
         self.bridge = CvBridge()
         
-        self.fir_weights = np.array([0.075, 0.125, 0.175, 0.250, 0.175, 0.125, 0.075])
-        self.left_history = deque(maxlen=7)
-        self.right_history = deque(maxlen=7)
-        self.missing_left = 0
-        self.missing_right = 0
-        self.last_offset = 0.0
-        self.filtered_offset = 0.0
-        self.max_offset_step = 22.0   # maksymalna zmiana offsetu na jedną klatkę [px]
-        self.offset_alpha = 0.22      # filtr dolnoprzepustowy offsetu; mniejsze = płynniej
-        self.lane_width_px = 400.0    # realny rozstaw linii pasa [px]
-
-        self.lower_color = np.array([20, 80, 80], dtype="uint8")
-        self.upper_color = np.array([40, 255, 255], dtype="uint8")
+        self.frame_subscriber = self.create_subscription(Image, '/ascamera/camera_publisher/rgb0/image', self.robot_listener_callback, qos_profile_sensor_data)
+        self.telemetry_subscriber = self.create_subscription(Float32MultiArray, '/vision/lane_telemetry', self.telemetry_callback, qos_profile_sensor_data)
         
-        self.p_erode = 1
-        self.p_dilate = 1
-        self.p_canny_min = 30
-        self.p_canny_max = 120
-        self.p_hough_thr = 15
-        self.p_hough_min = 15
-        self.p_hough_max = 50
-        self.current_curve_threshold = 0.0005 
+        self.offset_value_publisher_ = self.create_publisher(Float32, '/vision/offset_raw', qos_profile_sensor_data)
+        self.color_range_publisher = self.create_publisher(Int32MultiArray, '/mentorpi/vision/hsv_thresholds', 10)
 
-        self.bumper_state = 'INACTIVE' 
-        self.bumper_start_time = 0.0
-        self.bumper_dir = 0.0          
-        self.pixel_threshold = 1200 
-
-        self.frame_subscriber = self.create_subscription(
-            Image, '/ascamera/camera_publisher/rgb0/image', self.listener_callback, qos_profile_sensor_data)
-        self.color_subscriber = self.create_subscription(
-            Int32MultiArray, '/mentorpi/vision/hsv_thresholds', self.color_callback, 10)
-        self.algo_params_subscriber = self.create_subscription(
-            Float32MultiArray, '/mentorpi/vision/algo_params', self.algo_params_callback, 10)
+        self.latest_robot_frame = None
+        self.last_robot_time = 0.0
+        self.latest_telemetry = None
         
-        self.telemetry_publisher = self.create_publisher(Float32MultiArray, '/vision/lane_telemetry', 10)
-
-        self.last_time = time.time()
         self.fps = 0.0
-        self.get_logger().info('Vision Node [SLAVE] - jazda po prawej linii, pas 400 px, wygładzanie offsetu gotowe.')
+        self.last_fps_time = time.time()
+        self.engines_on = True
 
-    def algo_params_callback(self, msg):
-        data = msg.data
-        if len(data) == 8:
-            self.p_erode = int(data[0])
-            self.p_dilate = int(data[1])
-            self.p_canny_min = int(data[2])
-            self.p_canny_max = int(data[3])
-            self.p_hough_thr = int(data[4])
-            self.p_hough_min = int(data[5])
-            self.p_hough_max = int(data[6])
-            self.current_curve_threshold = float(data[7])
-            self.get_logger().info(f"==> Change: Erode={self.p_erode}, Dilate={self.p_dilate}, Canny={self.p_canny_min}-{self.p_canny_max}, HoughMin={self.p_hough_min}")
+        self.frame_w, self.frame_h = 640, 480
+        self.grid_w, self.grid_h = 480, 360
+        self.panel_w = 320 
 
-    def color_callback(self, msg):
-        data = msg.data
-        if len(data) == 6:
-            self.lower_color = np.array([data[0], data[1], data[2]], dtype="uint8")
-            self.upper_color = np.array([data[3], data[4], data[5]], dtype="uint8")
-            # PRZYWRÓCONY LOG
-            self.get_logger().info(f"==> Change color: Min={self.lower_color}, Max={self.upper_color}")
+        self.target_bgr = (0, 255, 255)
+        # Domyślne wartości startowe GUI
+        self.lower_color = np.array([15, 50, 180], dtype="uint8")
+        self.upper_color = np.array([35, 255, 255], dtype="uint8")
+        
+        self.white_lower = np.array([55, 0, 210], dtype="uint8")
+        self.white_upper = np.array([179, 255, 255], dtype="uint8")
 
-    def listener_callback(self, msg):
-        current_time = time.time()
-        self.fps = 1.0 / (current_time - self.last_time + 0.0001)
-        self.last_time = current_time
+        self.click_zones = {}
+
+        self.window_name = "HiWonder Control Center (Korean Merged)"
+        cv.namedWindow(self.window_name)
+        cv.setMouseCallback(self.window_name, self.mouse_callback)
+
+        self.gui_timer = self.create_timer(0.033, self.main_update_loop)
+        self.get_logger().info('GUI loaded - Clean UI Version z logowaniem HSV do konsoli.')
+
+    def telemetry_callback(self, msg):
+        self.latest_telemetry = msg.data
+
+    def robot_listener_callback(self, msg):
         try:
             frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
-            self.perform_detection(frame)
+            self.latest_robot_frame = cv.resize(frame, (self.frame_w, self.frame_h))
+            self.last_robot_time = time.time()
         except Exception:
             pass
 
-    def perform_detection(self, frame):
-        left_lines, right_lines, roi_mask = self.detect_lines_core(frame)
-        left_poly, self.missing_left = self.fit_and_filter(left_lines, self.left_history, self.missing_left)
-        right_poly, self.missing_right = self.fit_and_filter(right_lines, self.right_history, self.missing_right)
-        self.calculate_and_log(frame.shape, left_poly, right_poly, roi_mask)
-
-    def detect_lines_core(self, frame):
-        height, width = frame.shape[:2]
-        crop_y = int(height * 0.55) 
-        cropped_frame = frame[crop_y:, :]
-        crop_h, crop_w = cropped_frame.shape[:2]
-
-        hsv = cv.cvtColor(cropped_frame, cv.COLOR_BGR2HSV)
-        mask = cv.inRange(hsv, self.lower_color, self.upper_color)
-
-        roi_mask = np.zeros_like(mask)
-        x_top_left = int(crop_w * 0.3)   
-        x_top_right = int(crop_w * 0.7)  
-        side_height = 135
-        
-        vertices = np.array([[ 
-            (0, crop_h), (crop_w, crop_h), (crop_w, crop_h - side_height),        
-            (x_top_right, 0), (x_top_left, 0), (0, crop_h - side_height)              
-        ]], dtype=np.int32)
-
-        cv.fillPoly(roi_mask, vertices, 255)
-        roi = cv.bitwise_and(mask, roi_mask)
-
-        roi_blurred = cv.GaussianBlur(roi, (7, 7), 0)
-        kernel = np.ones((5, 5), np.uint8)
-        roi_clean = cv.erode(roi_blurred, kernel, iterations=self.p_erode)
-        roi_clean = cv.dilate(roi_clean, kernel, iterations=self.p_dilate)
-
-        edges = cv.Canny(roi_clean, self.p_canny_min, self.p_canny_max)
-        lines = cv.HoughLinesP(edges, 1, np.pi/180, self.p_hough_thr, minLineLength=self.p_hough_min, maxLineGap=self.p_hough_max)
-
-        left_lines, right_lines = [], []
-        if lines is not None:
-            for line in lines:
-                for x1, y1, x2, y2 in line:
-                    real_y1, real_y2 = y1 + crop_y, y2 + crop_y
-                    slope = (real_y2 - real_y1) / (x2 - x1 + 0.0001)
+    def mouse_callback(self, event, x, y, flags, param):
+        if event == cv.EVENT_LBUTTONDOWN:
+            # Kliknięcie w obraz kamery - Pipeta HSV dla ZÓŁTYCH LINII
+            if self.panel_w <= x < self.panel_w + self.grid_w and 0 <= y < self.grid_h:
+                if self.latest_robot_frame is not None:
+                    orig_x = int((x - self.panel_w) * self.frame_w / self.grid_w)
+                    orig_y = int(y * self.frame_h / self.grid_h)
+                    bgr_pixel = self.latest_robot_frame[orig_y, orig_x]
+                    hsv_pixel = cv.cvtColor(np.uint8([[bgr_pixel]]), cv.COLOR_BGR2HSV)[0][0]
+                    h, s, v = hsv_pixel
                     
-                    if abs(slope) < 0.1: continue # Odrzucamy poziome śmieci
+                    self.lower_color = np.array([max(0, h - 10), max(0, s - 50), max(0, v - 50)], dtype="uint8")
+                    self.upper_color = np.array([min(179, h + 10), 255, 255], dtype="uint8")
+                    self.target_bgr = (int(bgr_pixel[0]), int(bgr_pixel[1]), int(bgr_pixel[2]))
+                    
+                    # Wypisanie gotowego kodu do konsoli (Zmienione na get_logger)
+                    raport = (
+                        "\n============================================================\n"
+                        "SKOPIUJ PONIŻSZY KOD DO lane_detector_robot.py (na robocie):\n"
+                        f"self.yellow_lower = np.array([{self.lower_color[0]}, {self.lower_color[1]}, {self.lower_color[2]}], dtype='uint8')\n"
+                        f"self.yellow_upper = np.array([{self.upper_color[0]}, {self.upper_color[1]}, {self.upper_color[2]}], dtype='uint8')\n"
+                        "============================================================"
+                    )
+                    self.get_logger().info(raport)
 
-                    if slope < 0: 
-                        left_lines.append((x1, real_y1, x2, real_y2))
-                    else: 
-                        right_lines.append((x1, real_y1, x2, real_y2))
-
-        return left_lines, right_lines, roi_clean
-
-    def fit_and_filter(self, lines, history, missing_counter):
-        if len(lines) == 0:
-            missing_counter += 1
-            if missing_counter > 15: history.clear()
-            elif len(history) > 0: history.append(history[-1]) 
+                    msg_color = Int32MultiArray()
+                    msg_color.data = [int(self.lower_color[0]), int(self.lower_color[1]), int(self.lower_color[2]), 
+                                      int(self.upper_color[0]), int(self.upper_color[1]), int(self.upper_color[2])]
+                    self.color_range_publisher.publish(msg_color)
             
-            if len(history) > 0: return history[-1], missing_counter
-            else: return None, missing_counter
+            # Kliknięcie w lewy panel sterowania
+            elif x < self.panel_w:
+                for key, rect in self.click_zones.items():
+                    rx1, ry1, rx2, ry2 = rect
+                    if rx1 <= x <= rx2 and ry1 <= y <= ry2:
+                        if key == 'BTN_ON': self.engines_on = True
+                        elif key == 'BTN_OFF': self.engines_on = False
+                        elif key == 'BTN_STOP':
+                            self.engines_on = False
+                            msg = Float32(); msg.data = 999.0
+                            for _ in range(3): self.offset_value_publisher_.publish(msg)
+                        break
 
-        x_coords, y_coords = [], []
-        for x1, y1, x2, y2 in lines:
-            x_coords.extend([x1, x2])
-            y_coords.extend([y1, y2])
+    def local_pipeline(self, frame):
+        # 1. Maska Żółta (Linie)
+        crop_img = frame[300:, :]
+        hsv_y = cv.cvtColor(crop_img, cv.COLOR_BGR2HSV)
+        mask_yellow = cv.inRange(hsv_y, self.lower_color, self.upper_color)
+        
+        # 2. Maska Biała (Stop) - Wymagane przez koreańską logikę do skrzyżowań
+        stop_img = frame[400:, :]
+        hsv_s = cv.cvtColor(stop_img, cv.COLOR_BGR2HSV)
+        mask_white = cv.inRange(hsv_s, self.white_lower, self.white_upper)
+        
+        mask_y_bgr = np.zeros_like(frame)
+        mask_y_bgr[300:, :] = cv.cvtColor(mask_yellow, cv.COLOR_GRAY2BGR)
+        
+        mask_w_bgr = np.zeros_like(frame)
+        mask_w_bgr[400:, :] = cv.cvtColor(mask_white, cv.COLOR_GRAY2BGR)
 
-        missing_counter = 0
-        if len(np.unique(y_coords)) < 2: return None, missing_counter
+        edges = cv.Canny(cv.GaussianBlur(mask_yellow, (5, 5), 0), 50, 150)
+        canny_bgr = np.zeros_like(frame)
+        canny_bgr[300:, :] = cv.cvtColor(edges, cv.COLOR_GRAY2BGR)
 
-        poly1 = np.polyfit(y_coords, x_coords, 1)
-        poly = np.array([0.0, poly1[0], poly1[1]]) # A=0 (brak łuku), B=kąt, C=pozycja
+        return mask_y_bgr, mask_w_bgr, canny_bgr
 
-        if len(history) == 0:
-            history.append(poly)
-        else:
-            smoothed_poly = 0.8 * poly + 0.2 * history[-1]
-            history.append(smoothed_poly)
+    def draw_telemetry(self, frame, tel_data):
+        if tel_data is not None and len(tel_data) >= 4:
+            lx, rx, stop_line, pedestrian = tel_data[0], tel_data[1], tel_data[2], tel_data[3]
             
-        return history[-1], missing_counter
+            cv.circle(frame, (int(lx), 320), 8, (255, 0, 0), -1)
+            cv.circle(frame, (int(rx), 320), 8, (0, 0, 255), -1)
+            cv.putText(frame, f"LX: {int(lx)}", (int(lx)-20, 310), cv.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+            cv.putText(frame, f"RX: {int(rx)}", (int(rx)-20, 310), cv.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
 
-    def calculate_and_log(self, frame_shape, left_poly, right_poly, roi_mask):
+            if stop_line == 1.0:
+                cv.line(frame, (0, 440), (640, 440), (0, 255, 255), 4)
+                cv.putText(frame, "STOP LINE DETECTED", (180, 430), cv.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 255), 3)
+                
+            if pedestrian == 1.0:
+                cv.putText(frame, "!!! PEDESTRIAN !!!", (180, 100), cv.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 255), 4)
+
+        return frame
+
+    def main_update_loop(self):
         current_time = time.time()
-        height, width, _ = frame_shape
-        target_offset = self.last_offset
-        center_x = width / 2.0
-        lookahead_y = int(height * 0.70) 
-        
-        # ============================================================
-        # GŁÓWNA ZMIANA: jazda w oparciu o PRAWĄ linię pasa.
-        # Zakładamy, że odległość między dwiema liniami pasa to 400 px,
-        # czyli środek pasa jest 200 px w lewo od prawej linii.
-        #
-        # offset > 0  -> środek pasa jest po prawej od kamery
-        # offset < 0  -> środek pasa jest po lewej od kamery
-        # ============================================================
-        raw_target_offset = None
-        half_lane = self.lane_width_px / 2.0
+        self.fps = 1.0 / (current_time - self.last_fps_time + 0.0001)
+        self.last_fps_time = current_time
+        cv.waitKey(1)
 
-        if right_poly is not None:
-            # Priorytet: prawa linia. To stabilizuje jazdę, gdy lewa jest przerywana
-            # albo chwilowo znika podczas wymijania/przejazdu między pasami.
-            right_x_look = right_poly[0]*(lookahead_y**2) + right_poly[1]*lookahead_y + right_poly[2]
-            desired_center_x = right_x_look - half_lane
-            raw_target_offset = float(desired_center_x - center_x)
+        if not self.engines_on:
+            msg = Float32(); msg.data = 999.0
+            self.offset_value_publisher_.publish(msg)
 
-        elif left_poly is not None:
-            # Awaryjnie, gdy prawej nie widać, rekonstruujemy środek z lewej linii.
-            left_x_look = left_poly[0]*(lookahead_y**2) + left_poly[1]*lookahead_y + left_poly[2]
-            desired_center_x = left_x_look + half_lane
-            raw_target_offset = float(desired_center_x - center_x)
+        grid_view = np.zeros((self.grid_h * 2, self.grid_w * 2, 3), dtype=np.uint8)
 
-        if raw_target_offset is not None:
-            # 1) ograniczenie skoku offsetu między klatkami, żeby nie było przeskoku
-            #    z maksymalnego skrętu w prawo na maksymalny w lewo.
-            delta = raw_target_offset - self.filtered_offset
-            delta = float(np.clip(delta, -self.max_offset_step, self.max_offset_step))
-            stepped_offset = self.filtered_offset + delta
+        if self.latest_robot_frame is not None and (current_time - self.last_robot_time) < 1.0:
+            base_frame = self.latest_robot_frame.copy()
+            mask_y_bgr, mask_w_bgr, canny_bgr = self.local_pipeline(base_frame)
+            rgb_bgr = self.draw_telemetry(base_frame, self.latest_telemetry)
 
-            # 2) filtr dolnoprzepustowy, czyli miękkie dochodzenie do celu.
-            self.filtered_offset = (1.0 - self.offset_alpha) * self.filtered_offset + self.offset_alpha * stepped_offset
-            target_offset = self.filtered_offset
+            cv.putText(rgb_bgr, "1. RGB + TELEMETRY", (10, 30), cv.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+            tl = cv.resize(rgb_bgr, (self.grid_w, self.grid_h))
+
+            cv.putText(mask_y_bgr, "2. YELLOW MASK (Lines)", (10, 30), cv.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+            tr = cv.resize(mask_y_bgr, (self.grid_w, self.grid_h))
+
+            cv.putText(mask_w_bgr, "3. WHITE MASK (Stop Line)", (10, 30), cv.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+            bl = cv.resize(mask_w_bgr, (self.grid_w, self.grid_h))
+
+            cv.putText(canny_bgr, "4. CANNY EDGES", (10, 30), cv.FONT_HERSHEY_SIMPLEX, 0.8, (100, 100, 255), 2)
+            br = cv.resize(canny_bgr, (self.grid_w, self.grid_h))
+
+            grid_view[0:self.grid_h, 0:self.grid_w] = tl
+            grid_view[0:self.grid_h, self.grid_w:self.grid_w*2] = tr
+            grid_view[self.grid_h:self.grid_h*2, 0:self.grid_w] = bl
+            grid_view[self.grid_h:self.grid_h*2, self.grid_w:self.grid_w*2] = br
         else:
-            # Gdy nie widzimy żadnej linii, nie wymyślamy nowego skrętu, tylko
-            # spokojnie trzymamy poprzedni kierunek.
-            target_offset = self.last_offset
+            cv.putText(grid_view, "ROBOT OFFLINE", (100, 100), cv.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 255), 3)
 
-        crop_h, crop_w = roi_mask.shape
-        bumper_h, bumper_w = 70, 180   
+        left_panel = np.zeros((self.grid_h * 2, self.panel_w, 3), dtype=np.uint8)
+        left_panel[:] = (35, 35, 35)
 
-        left_zone = roi_mask[crop_h - bumper_h : crop_h, 0 : bumper_w]
-        right_zone = roi_mask[crop_h - bumper_h : crop_h, crop_w - bumper_w : crop_w]
+        cv.putText(left_panel, "QUAD CONTROL", (20, 35), cv.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 255), 2)
+        cv.line(left_panel, (10, 45), (310, 45), (100, 100, 100), 2)
+
+        cv.putText(left_panel, "TARGET COLOR (LClick Pipeta):", (10, 80), cv.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+        cv.rectangle(left_panel, (230, 60), (300, 95), self.target_bgr, -1)
+        cv.rectangle(left_panel, (230, 60), (300, 95), (255, 255, 255), 2) 
+
+        self.click_zones.clear()
+        mot_y = 130
+        cv.putText(left_panel, "MOTOR CONTROL:", (10, mot_y), cv.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
         
-        left_pixels = cv.countNonZero(left_zone)
-        right_pixels = cv.countNonZero(right_zone)
-        bumper_active_flag = False
+        on_col = (0, 200, 0) if self.engines_on else (50, 50, 50)
+        cv.rectangle(left_panel, (10, mot_y + 10), (150, mot_y + 50), on_col, -1)
+        cv.rectangle(left_panel, (10, mot_y + 10), (150, mot_y + 50), (255, 255, 255), 2)
+        cv.putText(left_panel, "ON", (65, mot_y + 36), cv.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        self.click_zones['BTN_ON'] = (10, mot_y + 10, 150, mot_y + 50)
 
-        def calculate_dynamic_force(pixels):
-            # Zderzak zostaje, ale bez agresywnego szarpnięcia kierownicą.
-            return 60.0 + (90.0) * min(1.0, max(0.0, (pixels - self.pixel_threshold) / 3000.0)) 
+        off_col = (0, 0, 200) if not self.engines_on else (50, 50, 50)
+        cv.rectangle(left_panel, (160, mot_y + 10), (310, mot_y + 50), off_col, -1)
+        cv.rectangle(left_panel, (160, mot_y + 10), (310, mot_y + 50), (255, 255, 255), 2)
+        cv.putText(left_panel, "OFF", (215, mot_y + 36), cv.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        self.click_zones['BTN_OFF'] = (160, mot_y + 10, 310, mot_y + 50)
 
-        if self.bumper_state == 'INACTIVE':
-            if left_pixels > self.pixel_threshold:
-                self.bumper_state = 'ESCAPING'
-                self.bumper_start_time = current_time
-                self.bumper_dir = calculate_dynamic_force(left_pixels)
-            elif right_pixels > self.pixel_threshold:
-                self.bumper_state = 'ESCAPING'
-                self.bumper_start_time = current_time
-                self.bumper_dir = -calculate_dynamic_force(right_pixels)
+        cv.rectangle(left_panel, (10, mot_y + 60), (310, mot_y + 100), (0, 100, 200), -1) 
+        cv.rectangle(left_panel, (10, mot_y + 60), (310, mot_y + 100), (255, 255, 255), 2)
+        cv.putText(left_panel, "CENTER & STOP", (70, mot_y + 86), cv.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        self.click_zones['BTN_STOP'] = (10, mot_y + 60, 310, mot_y + 100)
 
-        if self.bumper_state == 'ESCAPING':
-            bumper_active_flag = True
-            if current_time - self.bumper_start_time < 0.35: target_offset = self.bumper_dir
-            else:
-                self.bumper_state = 'ALIGNING'
-                self.bumper_start_time = current_time
-        elif self.bumper_state == 'ALIGNING':
-            bumper_active_flag = True
-            if current_time - self.bumper_start_time < 0.25: target_offset = -self.bumper_dir * 0.20 
-            else: self.bumper_state = 'INACTIVE'
-
-        self.last_offset = target_offset
-
-        telemetry_array = [0.0] * 12
-        if left_poly is not None:
-            telemetry_array[0] = 1.0
-            telemetry_array[1:4] = left_poly
-        if right_poly is not None:
-            telemetry_array[4] = 1.0
-            telemetry_array[5:8] = right_poly
+        cv.putText(left_panel, f"FPS: {self.fps:.1f}", (10, mot_y + 140), cv.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        
+        if self.latest_telemetry is not None and len(self.latest_telemetry) >= 4:
+            lx, rx = self.latest_telemetry[0], self.latest_telemetry[1]
+            cv.putText(left_panel, f"LX: {int(lx)} | RX: {int(rx)}", (10, mot_y + 170), cv.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
             
-        telemetry_array[8] = float(target_offset) 
-        telemetry_array[9] = 1.0 if bumper_active_flag else 0.0
-        telemetry_array[10] = float(left_pixels)
-        telemetry_array[11] = float(right_pixels)
-        
-        tel_msg = Float32MultiArray()
-        tel_msg.data = telemetry_array
-        self.telemetry_publisher.publish(tel_msg)
+        if not self.engines_on:
+            cv.putText(left_panel, "ENGINES STOPPED", (10, mot_y + 210), cv.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+
+        final_ui = np.hstack((left_panel, grid_view))
+        cv.imshow(self.window_name, final_ui)
 
 def main(args=None):
     rclpy.init(args=args)
@@ -275,6 +231,7 @@ def main(args=None):
     except KeyboardInterrupt: pass
     node.destroy_node()
     rclpy.shutdown()
+    cv.destroyAllWindows()
 
 if __name__ == '__main__':
     main()
