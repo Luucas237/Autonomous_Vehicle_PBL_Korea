@@ -48,6 +48,7 @@ The development is divided into three distinct modules. Manufacturer packages (`
 ## ===== Launching =====
 **Rasbian => Terminator for 2D scanning**
 ```bash
+ros2 run joy joy_node
 sudo chmod a+rw /dev/gpiochip*
 ros2 launch slam slam.launch.py    
 ```
