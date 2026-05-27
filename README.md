@@ -48,8 +48,10 @@ The development is divided into three distinct modules. Manufacturer packages (`
 ## ===== Launching =====
 **Rasbian => Terminator for 2D scanning**
 ```bash
+sudo chmod a+rw /dev/gpiochip*
 ros2 launch slam slam.launch.py    
 ```
+
 **Rasbian => Terminator #2**
 ```bash
 cd ~/shared/PBL_Korea/Autonomous_Vehicle_PBL_Korea

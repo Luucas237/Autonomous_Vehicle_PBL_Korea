@@ -9,6 +9,7 @@ from rclpy.qos import qos_profile_sensor_data
 import cv2 as cv
 import numpy as np
 import time
+import os
 
 class ProcessFrame(Node):
     def __init__(self):
@@ -33,22 +34,35 @@ class ProcessFrame(Node):
         self.grid_w, self.grid_h = 480, 360
         self.panel_w = 320 
 
+        # ŚCIEŻKA DO WZORCA NA LAPTOPIE
+        self.template_path = '/home/ubuntu/ros2_ws/src/mentorpi_core/config/pedestrian.png'
+        self.pedestrian_contour = self.load_template()
+
         self.target_bgr = (0, 255, 255)
-        # Domyślne wartości startowe GUI
         self.lower_color = np.array([15, 50, 180], dtype="uint8")
         self.upper_color = np.array([35, 255, 255], dtype="uint8")
-        
         self.white_lower = np.array([55, 0, 210], dtype="uint8")
         self.white_upper = np.array([179, 255, 255], dtype="uint8")
 
         self.click_zones = {}
 
-        self.window_name = "HiWonder Control Center (Korean Merged)"
+        self.window_name = "HiWonder Control Center (Hourglass Vision)"
         cv.namedWindow(self.window_name)
         cv.setMouseCallback(self.window_name, self.mouse_callback)
 
         self.gui_timer = self.create_timer(0.033, self.main_update_loop)
-        self.get_logger().info('GUI loaded - Clean UI Version z logowaniem HSV do konsoli.')
+        self.get_logger().info('GUI loaded - Podgląd klepsydry aktywny.')
+
+    def load_template(self):
+        if not os.path.exists(self.template_path):
+            self.get_logger().warn(f"Brak pliku wzorca: {self.template_path}. Podgląd Hu wyłączony.")
+            return None
+        temp_img = cv.imread(self.template_path, cv.IMREAD_GRAYSCALE)
+        _, thresh = cv.threshold(temp_img, 127, 255, cv.THRESH_BINARY_INV)
+        contours, _ = cv.findContours(thresh, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE)
+        if contours:
+            return max(contours, key=cv.contourArea)
+        return None
 
     def telemetry_callback(self, msg):
         self.latest_telemetry = msg.data
@@ -63,7 +77,6 @@ class ProcessFrame(Node):
 
     def mouse_callback(self, event, x, y, flags, param):
         if event == cv.EVENT_LBUTTONDOWN:
-            # Kliknięcie w obraz kamery - Pipeta HSV dla ZÓŁTYCH LINII
             if self.panel_w <= x < self.panel_w + self.grid_w and 0 <= y < self.grid_h:
                 if self.latest_robot_frame is not None:
                     orig_x = int((x - self.panel_w) * self.frame_w / self.grid_w)
@@ -75,23 +88,12 @@ class ProcessFrame(Node):
                     self.lower_color = np.array([max(0, h - 10), max(0, s - 50), max(0, v - 50)], dtype="uint8")
                     self.upper_color = np.array([min(179, h + 10), 255, 255], dtype="uint8")
                     self.target_bgr = (int(bgr_pixel[0]), int(bgr_pixel[1]), int(bgr_pixel[2]))
-                    
-                    # Wypisanie gotowego kodu do konsoli (Zmienione na get_logger)
-                    raport = (
-                        "\n============================================================\n"
-                        "SKOPIUJ PONIŻSZY KOD DO lane_detector_robot.py (na robocie):\n"
-                        f"self.yellow_lower = np.array([{self.lower_color[0]}, {self.lower_color[1]}, {self.lower_color[2]}], dtype='uint8')\n"
-                        f"self.yellow_upper = np.array([{self.upper_color[0]}, {self.upper_color[1]}, {self.upper_color[2]}], dtype='uint8')\n"
-                        "============================================================"
-                    )
-                    self.get_logger().info(raport)
 
                     msg_color = Int32MultiArray()
                     msg_color.data = [int(self.lower_color[0]), int(self.lower_color[1]), int(self.lower_color[2]), 
                                       int(self.upper_color[0]), int(self.upper_color[1]), int(self.upper_color[2])]
                     self.color_range_publisher.publish(msg_color)
             
-            # Kliknięcie w lewy panel sterowania
             elif x < self.panel_w:
                 for key, rect in self.click_zones.items():
                     rx1, ry1, rx2, ry2 = rect
@@ -105,27 +107,53 @@ class ProcessFrame(Node):
                         break
 
     def local_pipeline(self, frame):
-        # 1. Maska Żółta (Linie)
-        crop_img = frame[300:, :]
-        hsv_y = cv.cvtColor(crop_img, cv.COLOR_BGR2HSV)
-        mask_yellow = cv.inRange(hsv_y, self.lower_color, self.upper_color)
-        
-        # 2. Maska Biała (Stop) - Wymagane przez koreańską logikę do skrzyżowań
-        stop_img = frame[400:, :]
-        hsv_s = cv.cvtColor(stop_img, cv.COLOR_BGR2HSV)
-        mask_white = cv.inRange(hsv_s, self.white_lower, self.white_upper)
-        
+        h, w = frame.shape[:2]
+
+        # 1. Tworzenie Klepsydry
+        road_mask = np.zeros((h, w), dtype=np.uint8)
+        road_vertices = np.array([[
+            (0, h), (w, h), (int(w * 0.8), 240), (int(w * 0.2), 240)
+        ]], dtype=np.int32)
+        cv.fillPoly(road_mask, road_vertices, 255)
+
+        pedestrian_mask = np.zeros((h, w), dtype=np.uint8)
+        ped_vertices = np.array([[
+            (0, 0), (w, 0), (int(w * 0.8), 240), (int(w * 0.2), 240)
+        ]], dtype=np.int32)
+        cv.fillPoly(pedestrian_mask, ped_vertices, 255)
+
+        # 2. Wizualizacja Drogi
+        hsv = cv.cvtColor(frame, cv.COLOR_BGR2HSV)
+        yellow_mask_full = cv.inRange(hsv, self.lower_color, self.upper_color)
+        road_yellow_mask = cv.bitwise_and(yellow_mask_full, yellow_mask_full, mask=road_mask)
         mask_y_bgr = np.zeros_like(frame)
-        mask_y_bgr[300:, :] = cv.cvtColor(mask_yellow, cv.COLOR_GRAY2BGR)
+        mask_y_bgr[:] = cv.cvtColor(road_yellow_mask, cv.COLOR_GRAY2BGR)
         
-        mask_w_bgr = np.zeros_like(frame)
-        mask_w_bgr[400:, :] = cv.cvtColor(mask_white, cv.COLOR_GRAY2BGR)
+        # 3. Wizualizacja Pieszego (Hu w górnym trapezie)
+        pedestrian_bgr = np.zeros_like(frame)
+        gray_frame = cv.cvtColor(frame, cv.COLOR_BGR2GRAY)
+        _, thresh_full = cv.threshold(gray_frame, 100, 255, cv.THRESH_BINARY_INV)
+        pedestrian_thresh = cv.bitwise_and(thresh_full, thresh_full, mask=pedestrian_mask)
+        pedestrian_bgr[:] = cv.cvtColor(pedestrian_thresh, cv.COLOR_GRAY2BGR)
 
-        edges = cv.Canny(cv.GaussianBlur(mask_yellow, (5, 5), 0), 50, 150)
+        if self.pedestrian_contour is not None:
+            contours, _ = cv.findContours(pedestrian_thresh, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE)
+            for cnt in contours:
+                area = cv.contourArea(cnt)
+                if area > 400:
+                    match_val = cv.matchShapes(self.pedestrian_contour, cnt, cv.CONTOURS_MATCH_I1, 0)
+                    if match_val < 0.15:
+                        cv.drawContours(pedestrian_bgr, [cnt], -1, (0, 0, 255), 3)
+                        x_b, y_b, w_b, h_b = cv.boundingRect(cnt)
+                        cv.rectangle(pedestrian_bgr, (x_b, y_b), (x_b+w_b, y_b+h_b), (0, 255, 0), 2)
+                        cv.putText(pedestrian_bgr, f"HU: {match_val:.2f}", (x_b, y_b-10), cv.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+
+        # 4. Krawędzie
+        edges = cv.Canny(cv.GaussianBlur(road_yellow_mask, (5, 5), 0), 50, 150)
         canny_bgr = np.zeros_like(frame)
-        canny_bgr[300:, :] = cv.cvtColor(edges, cv.COLOR_GRAY2BGR)
+        canny_bgr[:] = cv.cvtColor(edges, cv.COLOR_GRAY2BGR)
 
-        return mask_y_bgr, mask_w_bgr, canny_bgr
+        return mask_y_bgr, pedestrian_bgr, canny_bgr
 
     def draw_telemetry(self, frame, tel_data):
         if tel_data is not None and len(tel_data) >= 4:
@@ -159,17 +187,17 @@ class ProcessFrame(Node):
 
         if self.latest_robot_frame is not None and (current_time - self.last_robot_time) < 1.0:
             base_frame = self.latest_robot_frame.copy()
-            mask_y_bgr, mask_w_bgr, canny_bgr = self.local_pipeline(base_frame)
+            mask_y_bgr, pedestrian_bgr, canny_bgr = self.local_pipeline(base_frame)
             rgb_bgr = self.draw_telemetry(base_frame, self.latest_telemetry)
 
             cv.putText(rgb_bgr, "1. RGB + TELEMETRY", (10, 30), cv.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
             tl = cv.resize(rgb_bgr, (self.grid_w, self.grid_h))
 
-            cv.putText(mask_y_bgr, "2. YELLOW MASK (Lines)", (10, 30), cv.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+            cv.putText(mask_y_bgr, "2. ROAD MASK", (10, 30), cv.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
             tr = cv.resize(mask_y_bgr, (self.grid_w, self.grid_h))
 
-            cv.putText(mask_w_bgr, "3. WHITE MASK (Stop Line)", (10, 30), cv.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
-            bl = cv.resize(mask_w_bgr, (self.grid_w, self.grid_h))
+            cv.putText(pedestrian_bgr, "3. PEDESTRIAN MASK", (10, 30), cv.FONT_HERSHEY_SIMPLEX, 0.8, (255, 100, 100), 2)
+            bl = cv.resize(pedestrian_bgr, (self.grid_w, self.grid_h))
 
             cv.putText(canny_bgr, "4. CANNY EDGES", (10, 30), cv.FONT_HERSHEY_SIMPLEX, 0.8, (100, 100, 255), 2)
             br = cv.resize(canny_bgr, (self.grid_w, self.grid_h))
